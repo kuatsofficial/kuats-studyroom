@@ -125,7 +125,7 @@ export default function StudentView({ onSwitchToAdmin }) {
       return;
     }
     if (!isValidStudentId(trimmedId)) {
-      setLoginError('학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026010123)');
+      setLoginError('학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026170123)');
       return;
     }
 
@@ -178,7 +178,7 @@ export default function StudentView({ onSwitchToAdmin }) {
       return;
     }
     if (!isValidStudentId(trimmedId)) {
-      setLoginError('학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026010123)');
+      setLoginError('학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026170123)');
       return;
     }
     if (!trimmedDept) {
@@ -771,7 +771,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                 type="text"
                 required
                 maxLength={10}
-                placeholder="2026010123"
+                placeholder="2026170123"
                 value={inputStudentId}
                 onChange={(e) => setInputStudentId(e.target.value.replace(/[^0-9]/g, ''))}
                 className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none tracking-wider"
@@ -1284,7 +1284,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                     </label>
                     <input
                       type="text"
-                      placeholder="예: 2026010123 (여러 명은 쉼표로 구분)"
+                      placeholder="예: 2026170123 (여러 명은 쉼표로 구분)"
                       value={companionIdsText}
                       onChange={(e) => setCompanionIdsText(e.target.value)}
                       className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl"
