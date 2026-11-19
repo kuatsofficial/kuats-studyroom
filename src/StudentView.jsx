@@ -64,17 +64,6 @@ function addSlotsToTime(startHHMM, slots) {
   return `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
 }
 
-// 열람실 모드 취소 건이 10분 잠금(쿨다운) 상태인지 확인
-function isReadingRoomCooldownActive(record, nowMs = Date.now()) {
-  if (!record || record.mode !== 'reading_room' || record.status !== 'cancelled') {
-    return false;
-  }
-  if (!record.cancelled_at) return false;
-  const cancelledAtMs = new Date(record.cancelled_at).getTime();
-  if (Number.isNaN(cancelledAtMs)) return false;
-  return nowMs - cancelledAtMs < READING_ROOM_COOLDOWN_MS;
-}
-
 export default function StudentView({ onSwitchToAdmin }) {
   // 로그인 / 회원가입 탭 상태
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup'
@@ -93,6 +82,7 @@ export default function StudentView({ onSwitchToAdmin }) {
   const [selectedSeat, setSelectedSeat] = useState('A-1');
   const [publicReservations, setPublicReservations] = useState([]);
   const [myReservations, setMyReservations] = useState([]);
+  const [myRecentCancelled, setMyRecentCancelled] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
 
   const [startTime, setStartTime] = useState('12:00');
@@ -100,7 +90,8 @@ export default function StudentView({ onSwitchToAdmin }) {
 
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [pinInput, setPinInput] = useState('');
-  const [companionIdsText, setCompanionIdsText] = useState('');
+  const [companionInput, setCompanionInput] = useState('');
+  const [companionList, setCompanionList] = useState([]);
   const [totalHeadcount, setTotalHeadcount] = useState(2);
   const [purpose, setPurpose] = useState('');
   const [bookingError, setBookingError] = useState('');
@@ -262,29 +253,25 @@ export default function StudentView({ onSwitchToAdmin }) {
         setSelectedSeat('A-1');
       }
 
-      const nowMs = Date.now();
+      // 1. 전체 활성 예약만 조회 (다른 사용자에게는 취소 자리가 즉시 빈자리로 노출)
       const { data: pubData, error: pubErr } = await supabase
         .from('public_reservations')
         .select('*')
-        .eq('date', selectedDate);
+        .eq('date', selectedDate)
+        .eq('status', 'active');
 
       if (!pubErr && pubData) {
-        const filteredPub = pubData.filter(
-          (r) => r.status === 'active' || isReadingRoomCooldownActive(r, nowMs)
-        );
-        setPublicReservations(filteredPub);
+        setPublicReservations(pubData);
       } else {
         const { data: fallbackData } = await supabase
           .from('reservations')
-          .select('id, date, mode, seat_id, start_time, end_time, status, cancelled_at')
-          .eq('date', selectedDate);
-
-        const filteredFallback = (fallbackData || []).filter(
-          (r) => r.status === 'active' || isReadingRoomCooldownActive(r, nowMs)
-        );
-        setPublicReservations(filteredFallback);
+          .select('id, date, mode, seat_id, start_time, end_time, status')
+          .eq('date', selectedDate)
+          .eq('status', 'active');
+        setPublicReservations(fallbackData || []);
       }
 
+      // 2. 내 활성 예약 조회
       const todayStr = days[0].dateStr;
       const { data: myData } = await supabase
         .from('reservations')
@@ -296,6 +283,19 @@ export default function StudentView({ onSwitchToAdmin }) {
         .order('start_time', { ascending: true });
 
       setMyReservations(myData || []);
+
+      // 3. 취소한 본인(student_id)이 최근 10분 이내 취소한 열람실 좌석 내역 조회
+      const cooldownCutoffISO = new Date(Date.now() - READING_ROOM_COOLDOWN_MS).toISOString();
+      const { data: myCancelledData } = await supabase
+        .from('reservations')
+        .select('id, date, mode, seat_id, start_time, end_time, cancelled_at')
+        .eq('student_id', studentInfo.studentId)
+        .eq('date', selectedDate)
+        .eq('mode', 'reading_room')
+        .eq('status', 'cancelled')
+        .gt('cancelled_at', cooldownCutoffISO);
+
+      setMyRecentCancelled(myCancelledData || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -311,23 +311,11 @@ export default function StudentView({ onSwitchToAdmin }) {
   const operatingStartTime = currentMode === 'reading_room' ? '00:00' : '12:00';
   const operatingEndTime = currentMode === 'reading_room' ? '24:00' : '22:00';
 
-  // 선택된 좌석/공간의 활성 예약 및 '열람실 모드 취소 후 10분 이내' 잠금 내역
   const currentSeatReservations = useMemo(() => {
-    const nowMs = Date.now();
-    return publicReservations
-      .filter((r) => {
-        if (r.seat_id !== selectedSeat) return false;
-        if (r.status === 'active') return true;
-        if (currentMode === 'reading_room' && isReadingRoomCooldownActive(r, nowMs)) {
-          return true;
-        }
-        return false;
-      })
-      .map((r) => ({
-        ...r,
-        isCooldown: r.status === 'cancelled',
-      }));
-  }, [publicReservations, selectedSeat, currentMode]);
+    return publicReservations.filter(
+      (r) => r.seat_id === selectedSeat && r.status === 'active'
+    );
+  }, [publicReservations, selectedSeat]);
 
   const availableStartSlots = useMemo(() => {
     return timeSlots.filter((slot) => {
@@ -361,6 +349,23 @@ export default function StudentView({ onSwitchToAdmin }) {
     [startTime, durationSlots]
   );
 
+  // 취소한 본인에게만 열람실 동일 좌석 10분 쿨다운 적용
+  const myCooldownConflict = useMemo(() => {
+    if (currentMode !== 'reading_room') return null;
+    const nowMs = Date.now();
+    return (
+      myRecentCancelled.find((c) => {
+        if (c.seat_id !== selectedSeat || !c.cancelled_at) return false;
+        const elapsed = nowMs - new Date(c.cancelled_at).getTime();
+        if (elapsed >= READING_ROOM_COOLDOWN_MS) return false;
+        return (
+          formatHHMM(c.start_time) < computedEndTime &&
+          formatHHMM(c.end_time) > startTime
+        );
+      }) || null
+    );
+  }, [currentMode, myRecentCancelled, selectedSeat, startTime, computedEndTime]);
+
   const rangeValidation = useMemo(() => {
     if (!startTime || availableStartSlots.length === 0) {
       return { valid: false, reason: '예약 가능한 시작 시간이 없습니다.' };
@@ -379,12 +384,33 @@ export default function StudentView({ onSwitchToAdmin }) {
     if (overlaps) {
       return {
         valid: false,
-        reason:
-          '선택한 시간 범위 중간에 이미 예약되었거나 취소 후 10분 대기 중인 시간이 포함되어 있습니다.',
+        reason: '선택한 시간 범위 중간에 이미 예약된 시간이 포함되어 있습니다.',
+      };
+    }
+    if (myCooldownConflict) {
+      const remainMin = Math.max(
+        1,
+        Math.ceil(
+          (READING_ROOM_COOLDOWN_MS -
+            (Date.now() - new Date(myCooldownConflict.cancelled_at).getTime())) /
+            60000
+        )
+      );
+      return {
+        valid: false,
+        reason: `본인이 취소한 [${selectedSeat}] 좌석은 취소 후 10분간 동일 좌석 재예약이 제한됩니다. (약 ${remainMin}분 후 가능)`,
       };
     }
     return { valid: true, reason: '' };
-  }, [startTime, computedEndTime, operatingEndTime, currentSeatReservations, availableStartSlots]);
+  }, [
+    startTime,
+    computedEndTime,
+    operatingEndTime,
+    currentSeatReservations,
+    availableStartSlots,
+    myCooldownConflict,
+    selectedSeat,
+  ]);
 
   const barStartMin = timeToMinutes(operatingStartTime);
   const barEndMin = timeToMinutes(operatingEndTime);
@@ -401,13 +427,42 @@ export default function StudentView({ onSwitchToAdmin }) {
         return {
           id: r.id,
           label: `${formatHHMM(r.start_time)}~${formatHHMM(r.end_time)}`,
-          isCooldown: Boolean(r.isCooldown),
           leftPct,
           widthPct,
         };
       })
       .filter(Boolean);
   }, [currentSeatReservations, barStartMin, barEndMin, barTotalMin]);
+
+  const handleAddCompanionId = () => {
+    setBookingError('');
+    const cleanId = companionInput.trim();
+
+    if (!isValidStudentId(cleanId)) {
+      setBookingError('동반자 학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026170123)');
+      return;
+    }
+    if (cleanId === studentInfo.studentId) {
+      setBookingError('동반자 학번에 본인 학번은 추가할 수 없습니다.');
+      return;
+    }
+    if (companionList.includes(cleanId)) {
+      setBookingError('이미 추가된 동반자 학번입니다.');
+      return;
+    }
+
+    const nextList = [...companionList, cleanId];
+    setCompanionList(nextList);
+    setCompanionInput('');
+    setTotalHeadcount((prev) => Math.max(Number(prev) || 2, nextList.length + 1));
+  };
+
+  const handleRemoveCompanionId = (targetId) => {
+    setBookingError('');
+    const nextList = companionList.filter((id) => id !== targetId);
+    setCompanionList(nextList);
+    setTotalHeadcount((prev) => Math.max(2, Math.min(Number(prev) || 2, nextList.length + 1)));
+  };
 
   const handleOpenBookingModal = () => {
     if (!rangeValidation.valid) {
@@ -449,7 +504,8 @@ export default function StudentView({ onSwitchToAdmin }) {
 
     setBookingError('');
     setPinInput('');
-    setCompanionIdsText('');
+    setCompanionInput('');
+    setCompanionList([]);
     setTotalHeadcount(2);
     setPurpose('');
     setShowBookingModal(true);
@@ -465,19 +521,16 @@ export default function StudentView({ onSwitchToAdmin }) {
       return;
     }
 
-    let companionList = [];
+    let finalCompanions = [];
     if (currentMode === 'study_room') {
-      companionList = companionIdsText
-        .split(/[\s,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      finalCompanions = [...companionList];
 
-      if (companionList.length < 1) {
-        setBookingError('스터디룸은 대표자 외 최소 1명 이상의 동반자 학번을 입력해야 합니다. (총 2인 이상)');
+      if (finalCompanions.length < 1) {
+        setBookingError('스터디룸은 대표자 외 최소 1명 이상의 동반자 학번을 추가해야 합니다. (총 2인 이상)');
         return;
       }
 
-      for (const cid of companionList) {
+      for (const cid of finalCompanions) {
         if (!isValidStudentId(cid)) {
           setBookingError(`동반자 학번(${cid})이 올바르지 않습니다. 숫자 10자리로 입력해 주세요.`);
           return;
@@ -498,7 +551,7 @@ export default function StudentView({ onSwitchToAdmin }) {
         return;
       }
 
-      const allIds = [studentInfo.studentId, ...companionList];
+      const allIds = [studentInfo.studentId, ...finalCompanions];
       const { data: regList, error: regErr } = await supabase
         .from('member_profiles')
         .select('student_id')
@@ -532,7 +585,6 @@ export default function StudentView({ onSwitchToAdmin }) {
 
     setBookingSubmitting(true);
     try {
-      // 활성 예약 충돌 확인
       const { data: conflictCheck } = await supabase
         .from('reservations')
         .select('id')
@@ -548,12 +600,13 @@ export default function StudentView({ onSwitchToAdmin }) {
         return;
       }
 
-      // 열람실 모드 동일 좌석 10분 쿨다운 충돌 확인
+      // 취소한 본인(student_id)이 최근 10분 내 동일 열람실 좌석을 취소했는지 DB 재검증
       if (currentMode === 'reading_room') {
         const cooldownCutoffISO = new Date(Date.now() - READING_ROOM_COOLDOWN_MS).toISOString();
         const { data: cooldownCheck } = await supabase
           .from('reservations')
           .select('id')
+          .eq('student_id', studentInfo.studentId)
           .eq('date', selectedDate)
           .eq('mode', 'reading_room')
           .eq('seat_id', selectedSeat)
@@ -564,7 +617,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
         if (cooldownCheck && cooldownCheck.length > 0) {
           setBookingError(
-            `취소된 [${selectedSeat}] 좌석은 취소 후 10분간 동일 좌석 예약이 제한됩니다.`
+            `본인이 취소한 [${selectedSeat}] 좌석은 취소 후 10분간 동일 좌석 재예약이 제한됩니다.`
           );
           setBookingSubmitting(false);
           return;
@@ -579,7 +632,7 @@ export default function StudentView({ onSwitchToAdmin }) {
         end_time: computedEndTime,
         student_id: studentInfo.studentId,
         student_name: studentInfo.name,
-        companion_ids: currentMode === 'study_room' ? companionList : [],
+        companion_ids: currentMode === 'study_room' ? finalCompanions : [],
         total_headcount: currentMode === 'study_room' ? Number(totalHeadcount) : 1,
         purpose: currentMode === 'study_room' ? purpose.trim() : '개인 열람실 이용',
         temp_password: pinInput.trim(),
@@ -639,7 +692,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
         alert(
           target.mode === 'reading_room'
-            ? `예약이 취소되었습니다. [${target.seat_id}] 좌석은 10분간 동일 좌석 예약이 제한됩니다.`
+            ? `예약이 취소되었습니다. 본인은 [${target.seat_id}] 좌석을 10분간 재예약할 수 없습니다.`
             : '예약이 정상적으로 취소되었습니다.'
         );
       } else if (actionModal.type === 'early_exit') {
@@ -756,7 +809,7 @@ export default function StudentView({ onSwitchToAdmin }) {
               <input
                 type="text"
                 required
-                placeholder="홍길동"
+                placeholder="박신우"
                 value={inputName}
                 onChange={(e) => setInputName(e.target.value)}
                 className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
@@ -949,7 +1002,7 @@ export default function StudentView({ onSwitchToAdmin }) {
               </span>
               <span className="text-sm font-semibold">
                 {currentMode === 'reading_room'
-                  ? '운영시간: 24시간 개방 (00:00 ~ 24:00) · 1인 1좌석 예약 · 취소 시 동일 좌석 10분 잠금'
+                  ? '운영시간: 24시간 개방 (00:00 ~ 24:00) · 1인 1좌석 예약 · 본인 취소 시 동일 좌석 10분 재예약 제한'
                   : '운영시간: 12:00 ~ 22:00 · 2인 이상(정회원 1인 필수) · 최대 4시간'}
               </span>
             </div>
@@ -1012,11 +1065,6 @@ export default function StudentView({ onSwitchToAdmin }) {
               <span className="flex items-center gap-1">
                 <span className="w-3.5 h-3.5 rounded bg-gray-300 inline-block" /> 예약됨
               </span>
-              {currentMode === 'reading_room' && (
-                <span className="flex items-center gap-1">
-                  <span className="w-3.5 h-3.5 rounded bg-amber-300 inline-block" /> 취소 후 10분 대기
-                </span>
-              )}
             </div>
           </div>
 
@@ -1083,34 +1131,16 @@ export default function StudentView({ onSwitchToAdmin }) {
                         key={blk.id}
                         type="button"
                         onClick={() =>
-                          alert(
-                            blk.isCooldown
-                              ? `[취소 후 10분 대기] ${blk.label} 시간대는 해당 좌석 취소 후 10분간 예약할 수 없습니다.`
-                              : `[예약됨] ${blk.label} 시간대는 이미 예약되어 있습니다.`
-                          )
+                          alert(`[예약됨] ${blk.label} 시간대는 이미 예약되어 있습니다.`)
                         }
                         style={{
                           left: `${blk.leftPct}%`,
                           width: `${Math.max(blk.widthPct, 2)}%`,
                         }}
-                        className={`absolute top-0 bottom-0 border-x flex items-center justify-center text-[11px] font-extrabold truncate px-1 cursor-pointer transition z-10 ${
-                          blk.isCooldown
-                            ? 'bg-amber-300/95 hover:bg-amber-400 text-amber-950 border-amber-600/50'
-                            : 'bg-gray-300/95 hover:bg-gray-400 text-gray-800 border-gray-500/50'
-                        }`}
-                        title={
-                          blk.isCooldown
-                            ? `${blk.label} 취소 후 10분 대기`
-                            : `${blk.label} 예약됨`
-                        }
+                        className="absolute top-0 bottom-0 bg-gray-300/95 hover:bg-gray-400 text-gray-800 border-x border-gray-500/50 flex items-center justify-center text-[11px] font-extrabold truncate px-1 cursor-pointer transition z-10"
+                        title={`${blk.label} 예약됨`}
                       >
-                        {blk.widthPct >= 10
-                          ? blk.isCooldown
-                            ? `10분 대기 (${blk.label})`
-                            : `예약됨 (${blk.label})`
-                          : blk.isCooldown
-                          ? '10분 대기'
-                          : '예약됨'}
+                        {blk.widthPct >= 10 ? `예약됨 (${blk.label})` : '예약됨'}
                       </button>
                     ))}
                   </div>
@@ -1119,7 +1149,7 @@ export default function StudentView({ onSwitchToAdmin }) {
             )}
 
             <p className="text-[11px] text-slate-500">
-              - 구분선 위 숫자가 각 시각(00~24시 또는 12~22시)이며, 초록색은 빈자리, 회색은 예약됨, 노란색은 열람실 취소 후 10분 대기 시간입니다.
+              - 구분선 위 숫자가 각 시각(00~24시 또는 12~22시)이며, 초록색은 빈자리, 회색은 이미 예약된 시간입니다.
             </p>
           </div>
 
@@ -1280,17 +1310,55 @@ export default function StudentView({ onSwitchToAdmin }) {
                 <>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
-                      <Users className="w-3.5 h-3.5" /> 동반자 학번 (10자리 숫자, 최소 1명 이상)
+                      <Users className="w-3.5 h-3.5" /> 동반자 학번 추가 (10자리 숫자, 최소 1명 이상)
                     </label>
-                    <input
-                      type="text"
-                      placeholder="예: 2026170123 (여러 명은 쉼표로 구분)"
-                      value={companionIdsText}
-                      onChange={(e) => setCompanionIdsText(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        maxLength={10}
+                        placeholder="예: 2026170123"
+                        value={companionInput}
+                        onChange={(e) => setCompanionInput(e.target.value.replace(/[^0-9]/g, ''))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCompanionId();
+                          }
+                        }}
+                        className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-xl tracking-wider"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCompanionId}
+                        className="px-4 py-2 text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white rounded-xl shrink-0"
+                      >
+                        추가
+                      </button>
+                    </div>
+
+                    {companionList.length > 0 && (
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        {companionList.map((cid) => (
+                          <span
+                            key={cid}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900"
+                          >
+                            <span>{cid}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCompanionId(cid)}
+                              aria-label={`${cid} 삭제`}
+                              className="text-emerald-700 hover:text-rose-600 font-extrabold leading-none"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
                     <p className="text-[11px] text-slate-400 mt-1">
-                      - 대표자 포함 최소 2인 이상이며, 최소 1명은 정회원이어야 합니다.
+                      - 학번 10자리를 입력 후 [추가]를 누르면 아래에 표시되며, × 버튼으로 지울 수 있습니다. (최소 1명 이상, 정회원 1명 필수)
                     </p>
                   </div>
 
@@ -1375,7 +1443,7 @@ export default function StudentView({ onSwitchToAdmin }) {
               {actionModal.type === 'early_exit'
                 ? '지금 퇴실하시면 현재 30분 단위 시간 이후의 잔여 시간이 즉시 빈자리로 반환됩니다.'
                 : actionModal.reservation?.mode === 'reading_room'
-                ? '예약 시 설정한 숫자 4자리 비밀번호를 입력해 주세요. (열람실 취소 시 동일 좌석 10분간 예약 제한)'
+                ? '예약 시 설정한 숫자 4자리 비밀번호를 입력해 주세요. (취소 후 10분간 본인은 동일 좌석 재예약이 제한됩니다)'
                 : '예약 시 설정한 숫자 4자리 비밀번호를 입력해 주세요.'}
             </p>
 
