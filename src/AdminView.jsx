@@ -367,7 +367,7 @@ export default function AdminView({ onBackToStudent }) {
               <input
                 type="email"
                 required
-                placeholder="kuats.official@gmail.com"
+                placeholder="imkorea.univ@gmail.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm"
