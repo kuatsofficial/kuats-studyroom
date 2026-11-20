@@ -24,25 +24,6 @@ import {
 
 const READING_ROOM_COOLDOWN_MS = 10 * 60 * 1000;
 
-// 실제 열람실 도면 기준 테이블 & 좌석 배치
-const ROOM_LAYOUT = [
-  {
-    name: 'A 테이블',
-    topSeats: ['A-1', 'A-2'],
-    bottomSeats: ['A-3', 'A-4'],
-  },
-  {
-    name: 'B 테이블',
-    topSeats: ['B-5', 'B-6'],
-    bottomSeats: ['B-7', 'B-8'],
-  },
-  {
-    name: 'C 테이블',
-    topSeats: ['C-9', 'C-10'],
-    bottomSeats: ['C-11', 'C-12'],
-  },
-];
-
 // "HH:MM:SS" 또는 "HH:MM" -> "HH:MM"으로 통일
 function formatHHMM(timeStr) {
   if (!timeStr) return '00:00';
@@ -55,6 +36,31 @@ function timeToMinutes(hhmm) {
   if (clean === '24:00') return 24 * 60;
   const [h, m] = clean.split(':').map(Number);
   return h * 60 + m;
+}
+
+// 현재 KST 시각 기준 "YYYY-MM-DD" 및 총 분(0~1440) 반환
+function getNowKST() {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const yyyy = kst.getUTCFullYear();
+  const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(kst.getUTCDate()).padStart(2, '0');
+  const hh = kst.getUTCHours();
+  const mi = kst.getUTCMinutes();
+  return {
+    dateStr: `${yyyy}-${mm}-${dd}`,
+    totalMinutes: hh * 60 + mi,
+    hh,
+    mi,
+  };
+}
+
+// 해당 예약의 이용 시간이 이미 종료되었는지 판별
+function isReservationExpired(dateStr, endHHMM) {
+  const nowKST = getNowKST();
+  if (dateStr < nowKST.dateStr) return true;
+  if (dateStr > nowKST.dateStr) return false;
+  return timeToMinutes(endHHMM) <= nowKST.totalMinutes;
 }
 
 // 이용 시간 옵션 생성 (30분 단위, 최대 maxHours 시간)
@@ -97,7 +103,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
   const days = useMemo(() => getNext8Days(), []);
   const [selectedDate, setSelectedDate] = useState(days[0].dateStr);
-  const [currentMode, setCurrentMode] = useState('study_room'); // 기본값은 항상 스터디룸 모드
+  const [currentMode, setCurrentMode] = useState('study_room'); // 기본값은 스터디룸
   const [selectedSeat, setSelectedSeat] = useState('A-1');
   const [publicReservations, setPublicReservations] = useState([]);
   const [myReservations, setMyReservations] = useState([]);
@@ -271,36 +277,43 @@ export default function StudentView({ onSwitchToAdmin }) {
         setSelectedSeat('A-1');
       }
 
-      // 1. 전체 활성 예약만 조회
+      // 1. 전체 활성 예약 조회 후 종료된 예약은 제외
       const { data: pubData, error: pubErr } = await supabase
         .from('public_reservations')
         .select('*')
         .eq('date', selectedDate)
         .eq('status', 'active');
 
-      if (!pubErr && pubData) {
-        setPublicReservations(pubData);
-      } else {
-        const { data: fallbackData } = await supabase
-          .from('reservations')
-          .select('id, date, mode, seat_id, start_time, end_time, status')
-          .eq('date', selectedDate)
-          .eq('status', 'active');
-        setPublicReservations(fallbackData || []);
-      }
+      const rawPub = !pubErr && pubData
+        ? pubData
+        : (
+            await supabase
+              .from('reservations')
+              .select('id, date, mode, seat_id, start_time, end_time, status')
+              .eq('date', selectedDate)
+              .eq('status', 'active')
+          ).data || [];
 
-      // 2. 내 활성 예약 조회
-      const todayStr = days[0].dateStr;
+      const activeNotExpiredPub = rawPub.filter(
+        (r) => !isReservationExpired(r.date || selectedDate, formatHHMM(r.end_time))
+      );
+      setPublicReservations(activeNotExpiredPub);
+
+      // 2. 내 활성 예약 중 아직 종료되지 않은 예약만 노출
+      const nowKST = getNowKST();
       const { data: myData } = await supabase
         .from('reservations')
         .select('id, date, mode, seat_id, start_time, end_time, total_headcount, purpose, status')
         .eq('student_id', studentInfo.studentId)
         .eq('status', 'active')
-        .gte('date', todayStr)
+        .gte('date', nowKST.dateStr)
         .order('date', { ascending: true })
         .order('start_time', { ascending: true });
 
-      setMyReservations(myData || []);
+      const activeNotExpiredMine = (myData || []).filter(
+        (r) => !isReservationExpired(r.date, formatHHMM(r.end_time))
+      );
+      setMyReservations(activeNotExpiredMine);
 
       // 3. 취소한 본인(student_id)이 최근 10분 이내 취소한 열람실 좌석 내역 조회
       const cooldownCutoffISO = new Date(Date.now() - READING_ROOM_COOLDOWN_MS).toISOString();
@@ -325,15 +338,32 @@ export default function StudentView({ onSwitchToAdmin }) {
     fetchScheduleAndReservations();
   }, [studentInfo, selectedDate]);
 
+  // 시간이 지나면 만료된 예약을 화면에서 자동 제거 (1분 간격 체크)
+  useEffect(() => {
+    if (!studentInfo) return;
+    const timer = setInterval(() => {
+      setMyReservations((prev) =>
+        prev.filter((r) => !isReservationExpired(r.date, formatHHMM(r.end_time)))
+      );
+      setPublicReservations((prev) =>
+        prev.filter((r) => !isReservationExpired(r.date || selectedDate, formatHHMM(r.end_time)))
+      );
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [studentInfo, selectedDate]);
+
   const timeSlots = useMemo(() => generateTimeSlots(currentMode), [currentMode]);
   const operatingStartTime = currentMode === 'reading_room' ? '00:00' : '12:00';
   const operatingEndTime = currentMode === 'reading_room' ? '24:00' : '22:00';
 
   const currentSeatReservations = useMemo(() => {
     return publicReservations.filter(
-      (r) => r.seat_id === selectedSeat && r.status === 'active'
+      (r) =>
+        r.seat_id === selectedSeat &&
+        r.status === 'active' &&
+        !isReservationExpired(r.date || selectedDate, formatHHMM(r.end_time))
     );
-  }, [publicReservations, selectedSeat]);
+  }, [publicReservations, selectedSeat, selectedDate]);
 
   const availableStartSlots = useMemo(() => {
     return timeSlots.filter((slot) => {
@@ -430,27 +460,27 @@ export default function StudentView({ onSwitchToAdmin }) {
     selectedSeat,
   ]);
 
-  const barStartMin = timeToMinutes(operatingStartTime);
-  const barEndMin = timeToMinutes(operatingEndTime);
-  const barTotalMin = barEndMin - barStartMin;
-
-  const reservedBlocks = useMemo(() => {
+  // 구간별 타임라인 블록 계산 헬퍼 (열람실 오전/오후 2줄 또는 스터디룸 12시~22시)
+  const buildBlocksForRange = (rangeStartMin, rangeEndMin) => {
+    const span = rangeEndMin - rangeStartMin;
     return currentSeatReservations
       .map((r) => {
-        const sMin = Math.max(barStartMin, timeToMinutes(r.start_time));
-        const eMin = Math.min(barEndMin, timeToMinutes(r.end_time));
+        const sMin = Math.max(rangeStartMin, timeToMinutes(r.start_time));
+        const eMin = Math.min(rangeEndMin, timeToMinutes(r.end_time));
         if (eMin <= sMin) return null;
-        const leftPct = ((sMin - barStartMin) / barTotalMin) * 100;
-        const widthPct = ((eMin - sMin) / barTotalMin) * 100;
         return {
-          id: r.id,
+          id: `${r.id}-${rangeStartMin}`,
           label: `${formatHHMM(r.start_time)}~${formatHHMM(r.end_time)}`,
-          leftPct,
-          widthPct,
+          leftPct: ((sMin - rangeStartMin) / span) * 100,
+          widthPct: ((eMin - sMin) / span) * 100,
         };
       })
       .filter(Boolean);
-  }, [currentSeatReservations, barStartMin, barEndMin, barTotalMin]);
+  };
+
+  const amBlocks = useMemo(() => buildBlocksForRange(0, 12 * 60), [currentSeatReservations]);
+  const pmBlocks = useMemo(() => buildBlocksForRange(12 * 60, 24 * 60), [currentSeatReservations]);
+  const studyBlocks = useMemo(() => buildBlocksForRange(12 * 60, 22 * 60), [currentSeatReservations]);
 
   const handleAddCompanionId = () => {
     setBookingError('');
@@ -498,7 +528,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
       if (todayMySlots + durationSlots > 8) {
         alert(
-          `준회원은 열람실을 하루 최대 4시간(8칸)까지만 예약할 수 있습니다.\n(현재 해당 날짜 기예약: ${todayMySlots * 0.5}시간)`
+          `준회원은 열람실(시험기간)을 하루 최대 4시간(8칸)까지만 예약할 수 있습니다.\n(현재 해당 날짜 기예약: ${todayMySlots * 0.5}시간)`
         );
         return;
       }
@@ -659,7 +689,7 @@ export default function StudentView({ onSwitchToAdmin }) {
       const { error: insertErr } = await supabase.from('reservations').insert([payload]);
       if (insertErr) throw insertErr;
 
-      alert('예약이 완료되었습니다! 취소 또는 조기 퇴실 시 방금 입력한 4자리 비밀번호가 필요합니다.');
+      alert('예약이 완료되었습니다! 취소 또는 퇴실 시 방금 입력한 4자리 비밀번호가 필요합니다.');
       setShowBookingModal(false);
       fetchScheduleAndReservations();
     } catch (err) {
@@ -713,11 +743,9 @@ export default function StudentView({ onSwitchToAdmin }) {
             : '예약이 정상적으로 취소되었습니다.'
         );
       } else if (actionModal.type === 'early_exit') {
-        const now = new Date();
-        const kstOffset = 9 * 60 * 60 * 1000;
-        const kstNow = new Date(now.getTime() + kstOffset);
-        const curH = kstNow.getUTCHours();
-        const curM = kstNow.getUTCMinutes();
+        const nowKST = getNowKST();
+        const curH = nowKST.hh;
+        const curM = nowKST.mi;
 
         const nextEndH = curM < 30 ? curH : curH + 1;
         const nextEndM = curM < 30 ? 30 : 0;
@@ -759,7 +787,7 @@ export default function StudentView({ onSwitchToAdmin }) {
           return;
         }
 
-        alert(`실시간 퇴실 처리가 완료되었습니다. (${newEndTime} 이후 잔여 시간이 빈자리로 반환되었습니다.)`);
+        alert(`퇴실 처리가 완료되었습니다. (${newEndTime} 이후 잔여 시간이 빈자리로 반환되었습니다.)`);
       }
 
       setActionModal(null);
@@ -772,7 +800,77 @@ export default function StudentView({ onSwitchToAdmin }) {
     }
   };
 
-  // 도면 내 개별 좌석 렌더링 (등받이 의자 모양 포함)
+  // 타임라인 구간 렌더링 (모바일에서 꽉 차게 들어오도록 압축)
+  const renderTimelineStrip = ({ titleBadge, startHour, cols, blocks }) => {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-[11px] font-bold text-slate-600">
+          <span>{titleBadge}</span>
+        </div>
+        <div className="relative h-4 text-[10px] font-bold text-slate-600 select-none">
+          {Array.from({ length: cols + 1 }, (_, idx) => {
+            const hourVal = startHour + idx;
+            const pct = (idx / cols) * 100;
+            const isFirst = idx === 0;
+            const isLast = idx === cols;
+            const labelText =
+              currentMode === 'study_room' && (isFirst || isLast)
+                ? `${hourVal}시`
+                : String(hourVal).padStart(2, '0');
+            const posClass = isFirst
+              ? 'left-0 translate-x-0'
+              : isLast
+              ? 'right-0 translate-x-0'
+              : '-translate-x-1/2';
+
+            return (
+              <span
+                key={hourVal}
+                style={isLast ? undefined : { left: `${pct}%` }}
+                className={`absolute top-0 ${posClass} tabular-nums whitespace-nowrap`}
+              >
+                {labelText}
+              </span>
+            );
+          })}
+        </div>
+
+        <div
+          className="relative grid rounded-lg overflow-hidden border border-emerald-600 bg-emerald-500"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+          }}
+        >
+          {Array.from({ length: cols }, (_, idx) => (
+            <div
+              key={idx}
+              className="h-8 border-r last:border-r-0 border-emerald-700/35"
+            />
+          ))}
+
+          {blocks.map((blk) => (
+            <button
+              key={blk.id}
+              type="button"
+              onClick={() =>
+                alert(`[예약됨] ${blk.label} 시간대는 이미 예약되어 있습니다.`)
+              }
+              style={{
+                left: `${blk.leftPct}%`,
+                width: `${Math.max(blk.widthPct, 2)}%`,
+              }}
+              className="absolute top-0 bottom-0 bg-gray-300/95 hover:bg-gray-400 text-gray-800 border-x border-gray-500/50 flex items-center justify-center text-[10px] font-extrabold truncate px-0.5 cursor-pointer transition z-10"
+              title={`${blk.label} 예약됨`}
+            >
+              {blk.widthPct >= 16 ? blk.label : '예약됨'}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // 도면 내 개별 좌석 버튼 (등받이 의자 모양 포함)
   const renderSeatButton = (seatId, position) => {
     const isSelected = selectedSeat === seatId;
     return (
@@ -785,23 +883,23 @@ export default function StudentView({ onSwitchToAdmin }) {
       >
         {position === 'top' && (
           <span
-            className={`w-10 sm:w-12 h-2 rounded-full mb-1 transition-colors ${
+            className={`w-9 h-1.5 rounded-full mb-1 transition-colors ${
               isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
             }`}
           />
         )}
         <span
-          className={`w-14 sm:w-16 h-11 sm:h-12 rounded-xl border-2 flex items-center justify-center text-xs sm:text-sm font-extrabold transition-all ${
+          className={`w-12 sm:w-14 h-10 sm:h-11 rounded-xl border-2 flex items-center justify-center text-xs font-extrabold transition-all ${
             isSelected
               ? 'bg-slate-900 text-white border-slate-900 shadow-md ring-2 ring-emerald-400'
-              : 'bg-emerald-50/90 text-slate-800 border-emerald-700 hover:bg-emerald-100'
+              : 'bg-emerald-50 text-slate-800 border-emerald-700 hover:bg-emerald-100'
           }`}
         >
           {seatId}
         </span>
         {position === 'bottom' && (
           <span
-            className={`w-10 sm:w-12 h-2 rounded-full mt-1 transition-colors ${
+            className={`w-9 h-1.5 rounded-full mt-1 transition-colors ${
               isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
             }`}
           />
@@ -810,7 +908,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     );
   };
 
-  // [화면 1] 로그인 / 회원가입 신청 화면 (모바일 최적화)
+  // [화면 1] 로그인 / 회원가입 신청 화면
   if (!studentInfo) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center px-4 py-6">
@@ -820,7 +918,7 @@ export default function StudentView({ onSwitchToAdmin }) {
               편입연 공간 통합 예약 시스템
             </span>
             <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900">
-              열람실 · 스터디룸 예약
+              열람실(시험기간) · 스터디룸 예약
             </h1>
             <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
               {authMode === 'login'
@@ -981,7 +1079,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
-      {/* 모바일 친화적 상단 헤더 */}
+      {/* 상단 헤더 */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-2.5 flex items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1014,7 +1112,7 @@ export default function StudentView({ onSwitchToAdmin }) {
       </header>
 
       <main className="max-w-5xl mx-auto px-3.5 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6">
-        {/* 1. 날짜 선택 (모바일 가로 스와이프 + 데스크톱 8열) */}
+        {/* 1. 날짜 선택 & 이용 규칙 */}
         <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
@@ -1056,90 +1154,121 @@ export default function StudentView({ onSwitchToAdmin }) {
             })}
           </div>
 
+          {/* '모드' 용어 제거 + '열람실(시험기간)' + 줄바꿈 이용 규칙 */}
           <div
-            className={`mt-3.5 p-3 rounded-xl border ${
+            className={`mt-3.5 p-3.5 rounded-xl border ${
               currentMode === 'reading_room'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
-                : 'bg-sky-50 border-sky-200 text-sky-950'
+                ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                : 'bg-sky-50/90 border-sky-200 text-sky-950'
             }`}
           >
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-white/90">
-                {currentMode === 'reading_room' ? '열람실 모드 (12석)' : '스터디룸 모드 (전체 대관)'}
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-white border border-current/15">
+                {currentMode === 'reading_room' ? '열람실(시험기간) · 12석' : '스터디룸 · 전체 대관'}
               </span>
-              <span className="text-xs font-semibold">
-                {currentMode === 'reading_room'
-                  ? '24시간 개방 · 1인 1좌석 · 본인 취소 시 동일 좌석 10분 제한'
-                  : '12:00~22:00 · 2인 이상(정회원 1인 필수) · 최대 4시간'}
-              </span>
+              <span className="text-xs font-extrabold">이용 규칙</span>
             </div>
+
+            {currentMode === 'reading_room' ? (
+              <ul className="text-xs font-medium space-y-1 leading-relaxed">
+                <li>• 24시간 개방 (00:00 ~ 24:00) 및 1인 1좌석 예약</li>
+                <li>• 준회원 일 최대 4시간 이용 가능 (정회원 제한 없음)</li>
+                <li>• 예약 취소 시 취소한 본인만 10분간 동일 좌석 재예약 제한</li>
+                <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
+              </ul>
+            ) : (
+              <ul className="text-xs font-medium space-y-1 leading-relaxed">
+                <li>• 운영시간: 12시 ~ 22시 (최대 4시간 이용 가능)</li>
+                <li>• 2인 이상 이용 필수 (대표자 및 동반자 중 정회원 1인 이상 필수)</li>
+                <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
+              </ul>
+            )}
           </div>
         </section>
 
-        {/* 2. 열람실 좌석 배치도 (이미지 도면 그대로 구현: A/B/C 테이블 + 의자 + 하단 입구) */}
+        {/* 2. 열람실(시험기간) 좌석 배치도 (A와 B는 떨어짐, B와 C는 붙어 있음 + 세로 스크롤 방지) */}
         {currentMode === 'reading_room' && (
           <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-bold text-slate-800">
-                열람실 좌석 배치도 (터치하여 선택)
+                열람실(시험기간) 좌석 배치도
               </h2>
               <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-slate-900 text-white">
                 선택됨: {selectedSeat}
               </span>
             </div>
 
-            {/* 모바일에서는 가로 스크롤로 비율 유지, 데스크톱에서는 전체 한눈에 표시 */}
-            <div className="overflow-x-auto pb-2">
-              <div className="min-w-[540px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-5 pt-6 pb-8">
-                <div className="grid grid-cols-3 gap-5">
-                  {ROOM_LAYOUT.map((table) => (
-                    <div key={table.name} className="flex flex-col items-center">
-                      {/* 위쪽 좌석 2개 */}
-                      <div className="flex items-center justify-center gap-2.5 mb-2.5">
-                        {table.topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
-                      </div>
+            <div
+              className="overflow-x-auto overflow-y-hidden pb-6"
+              style={{ touchAction: 'pan-x' }}
+            >
+              <div className="min-w-[600px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-5 pt-5 pb-7">
+                <div className="flex items-stretch justify-between gap-8">
+                  {/* A 테이블 (단독 분리) */}
+                  <div className="w-[185px] shrink-0 flex flex-col items-center">
+                    <div className="flex items-center justify-center gap-2 mb-2">
+                      {['A-1', 'A-2'].map((seatId) => renderSeatButton(seatId, 'top'))}
+                    </div>
+                    <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                      <span className="text-sm font-extrabold text-stone-700">A 테이블</span>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 mt-2">
+                      {['A-3', 'A-4'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                    </div>
+                  </div>
 
-                      {/* 가운데 테이블 박스 */}
-                      <div className="w-full h-14 sm:h-16 rounded-2xl bg-white border-2 border-stone-300 shadow-xs flex items-center justify-center">
-                        <span className="text-sm sm:text-base font-extrabold text-stone-700">
-                          {table.name}
-                        </span>
+                  {/* B 테이블 + C 테이블 (서로 밀착 연결) */}
+                  <div className="flex-1 grid grid-cols-2 rounded-2xl border-2 border-stone-300 bg-white/60 p-2 gap-0">
+                    {/* B 테이블 */}
+                    <div className="flex flex-col items-center border-r-2 border-stone-300 pr-2">
+                      <div className="flex items-center justify-center gap-2 mb-2">
+                        {['B-5', 'B-6'].map((seatId) => renderSeatButton(seatId, 'top'))}
                       </div>
-
-                      {/* 아래쪽 좌석 2개 */}
-                      <div className="flex items-center justify-center gap-2.5 mt-2.5">
-                        {table.bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                      <div className="w-full h-14 rounded-l-xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                        <span className="text-sm font-extrabold text-stone-700">B 테이블</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-2 mt-2">
+                        {['B-7', 'B-8'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
                       </div>
                     </div>
-                  ))}
+
+                    {/* C 테이블 */}
+                    <div className="flex flex-col items-center pl-2">
+                      <div className="flex items-center justify-center gap-2 mb-2">
+                        {['C-9', 'C-10'].map((seatId) => renderSeatButton(seatId, 'top'))}
+                      </div>
+                      <div className="w-full h-14 rounded-r-xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                        <span className="text-sm font-extrabold text-stone-700">C 테이블</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-2 mt-2">
+                        {['C-11', 'C-12'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* 왼쪽 하단 출입구 표시 */}
-                <div className="absolute -bottom-6 left-10 sm:left-14 flex flex-col items-center">
-                  <div className="flex items-center gap-6 bg-stone-100 px-3">
-                    <span className="w-1 h-4 bg-stone-500 rounded-full" />
-                    <ArrowUp className="w-5 h-5 text-stone-600 stroke-[2.5]" />
-                    <span className="w-1 h-4 bg-stone-500 rounded-full" />
+                <div className="absolute -bottom-6 left-10 flex flex-col items-center">
+                  <div className="flex items-center gap-5 bg-stone-100 px-2.5">
+                    <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
+                    <ArrowUp className="w-4 h-4 text-stone-600 stroke-[2.5]" />
+                    <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
                   </div>
-                  <span className="text-xs font-extrabold text-stone-600 mt-0.5">입구</span>
+                  <span className="text-[11px] font-extrabold text-stone-600">입구</span>
                 </div>
               </div>
             </div>
-
-            <p className="text-[11px] text-slate-400 mt-4">
-              * 좌우로 밀면 전체 배치도를 볼 수 있으며, 원하는 좌석 번호를 누르면 아래 시간표가 해당 좌석 기준으로 바뀝니다.
-            </p>
           </section>
         )}
 
-        {/* 3. 타임라인 바 + [시작 시간 + 이용 시간] 선택 */}
+        {/* 3. 압축된 시간표 + [시작 시간 + 이용 시간] 선택 */}
         <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
               <Clock className="w-4 h-4 text-emerald-600" />
               {currentMode === 'reading_room'
-                ? `[${selectedSeat}] 예약 현황 및 시간 선택`
-                : '[스터디룸 전체] 예약 현황 및 시간 선택'}
+                ? `[${selectedSeat}] 시간 선택`
+                : '[스터디룸] 12시 ~ 22시 시간 선택'}
             </h2>
 
             <div className="flex items-center gap-3 text-xs font-semibold">
@@ -1152,92 +1281,36 @@ export default function StudentView({ onSwitchToAdmin }) {
             </div>
           </div>
 
-          {/* 1시간 단위 타임라인 바 */}
-          <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+          {/* 열람실은 오전/오후 2줄 압축, 스터디룸은 12시~22시 한 줄 압축 */}
+          <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
             {loadingData ? (
               <div className="h-12 rounded-xl bg-slate-200 animate-pulse" />
+            ) : currentMode === 'reading_room' ? (
+              <>
+                {renderTimelineStrip({
+                  titleBadge: '오전 (00 ~ 12)',
+                  startHour: 0,
+                  cols: 12,
+                  blocks: amBlocks,
+                })}
+                {renderTimelineStrip({
+                  titleBadge: '오후 (12 ~ 24)',
+                  startHour: 12,
+                  cols: 12,
+                  blocks: pmBlocks,
+                })}
+              </>
             ) : (
-              <div className="overflow-x-auto pb-1">
-                <div className="min-w-[640px]">
-                  <div className="relative h-5 text-[11px] font-bold text-slate-600 mb-1 select-none">
-                    {Array.from(
-                      {
-                        length:
-                          (currentMode === 'reading_room' ? 24 : 10) + 1,
-                      },
-                      (_, idx) => {
-                        const totalCols =
-                          currentMode === 'reading_room' ? 24 : 10;
-                        const hourVal =
-                          (currentMode === 'reading_room' ? 0 : 12) + idx;
-                        const pct = (idx / totalCols) * 100;
-                        const posClass =
-                          idx === 0
-                            ? 'left-0 translate-x-0'
-                            : idx === totalCols
-                            ? 'right-0 translate-x-0'
-                            : '-translate-x-1/2';
-                        return (
-                          <span
-                            key={hourVal}
-                            style={
-                              idx === totalCols ? undefined : { left: `${pct}%` }
-                            }
-                            className={`absolute top-0 ${posClass} tabular-nums`}
-                          >
-                            {String(hourVal).padStart(2, '0')}
-                          </span>
-                        );
-                      }
-                    )}
-                  </div>
-
-                  <div
-                    className="relative grid rounded-xl overflow-hidden border border-emerald-600 bg-emerald-500"
-                    style={{
-                      gridTemplateColumns: `repeat(${
-                        currentMode === 'reading_room' ? 24 : 10
-                      }, minmax(0, 1fr))`,
-                    }}
-                  >
-                    {Array.from(
-                      { length: currentMode === 'reading_room' ? 24 : 10 },
-                      (_, idx) => (
-                        <div
-                          key={idx}
-                          className="h-10 border-r last:border-r-0 border-emerald-700/40"
-                        />
-                      )
-                    )}
-
-                    {reservedBlocks.map((blk) => (
-                      <button
-                        key={blk.id}
-                        type="button"
-                        onClick={() =>
-                          alert(`[예약됨] ${blk.label} 시간대는 이미 예약되어 있습니다.`)
-                        }
-                        style={{
-                          left: `${blk.leftPct}%`,
-                          width: `${Math.max(blk.widthPct, 2)}%`,
-                        }}
-                        className="absolute top-0 bottom-0 bg-gray-300/95 hover:bg-gray-400 text-gray-800 border-x border-gray-500/50 flex items-center justify-center text-[11px] font-extrabold truncate px-1 cursor-pointer transition z-10"
-                        title={`${blk.label} 예약됨`}
-                      >
-                        {blk.widthPct >= 10 ? `예약됨 (${blk.label})` : '예약됨'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              renderTimelineStrip({
+                titleBadge: '이용 시간 (12시 ~ 22시)',
+                startHour: 12,
+                cols: 10,
+                blocks: studyBlocks,
+              })
             )}
-
-            <p className="text-[11px] text-slate-500">
-              * 초록색은 예약 가능한 빈자리, 회색은 이미 예약된 시간입니다.
-            </p>
           </div>
 
-          {/* 시작 시간 & 이용 시간 선택 컨트롤 (모바일 터치 크기 확보) */}
+          {/* 시작 시간 & 이용 시간 선택 컨트롤 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1.5">1. 시작 시간</label>
@@ -1276,7 +1349,7 @@ export default function StudentView({ onSwitchToAdmin }) {
           </div>
         </section>
 
-        {/* 4. 내 예약 내역 */}
+        {/* 4. 내 활성 예약 내역 (종료 시 자동 삭제, 예약 중엔 [퇴실하기] 버튼 표시) */}
         <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
           <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" /> 내 활성 예약 내역 ({myReservations.length}건)
@@ -1298,14 +1371,16 @@ export default function StudentView({ onSwitchToAdmin }) {
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-white">
-                          {res.mode === 'reading_room' ? `열람실 ${res.seat_id}` : '스터디룸 전체'}
+                          {res.mode === 'reading_room'
+                            ? `열람실(시험기간) ${res.seat_id}`
+                            : '스터디룸'}
                         </span>
                         <span className="text-sm font-extrabold text-slate-800">
                           {res.date} | {sHHMM} ~ {eHHMM}
                         </span>
                         {inProgress && (
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 animate-pulse">
-                            현재 이용 중
+                            예약 중
                           </span>
                         )}
                       </div>
@@ -1326,7 +1401,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                           }}
                           className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
                         >
-                          <LogOut className="w-3.5 h-3.5" /> 실시간 퇴실
+                          <LogOut className="w-3.5 h-3.5" /> 퇴실하기
                         </button>
                       ) : (
                         <button
@@ -1349,12 +1424,12 @@ export default function StudentView({ onSwitchToAdmin }) {
         </section>
       </main>
 
-      {/* 모바일/데스크톱 하단 고정 예약 실행 바 */}
+      {/* 하단 고정 예약 실행 바 */}
       <div className="fixed bottom-0 inset-x-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 text-white z-30">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div className="min-w-0 text-xs sm:text-sm">
             <div className="font-extrabold text-emerald-400">
-              {currentMode === 'reading_room' ? `좌석 ${selectedSeat}` : '스터디룸 전체'}
+              {currentMode === 'reading_room' ? `좌석 ${selectedSeat}` : '스터디룸'}
             </div>
             {rangeValidation.valid ? (
               <div className="truncate text-slate-200">
@@ -1380,12 +1455,12 @@ export default function StudentView({ onSwitchToAdmin }) {
         </div>
       </div>
 
-      {/* 예약 신청 모달 (모바일 바텀시트 + 데스크톱 중앙 모달) */}
+      {/* 예약 신청 모달 */}
       {showBookingModal && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-md w-full p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-extrabold text-slate-900 mb-1">
-              {currentMode === 'reading_room' ? `열람실 [${selectedSeat}] 예약` : '스터디룸 전체 대관 신청'}
+              {currentMode === 'reading_room' ? `열람실(시험기간) [${selectedSeat}] 예약` : '스터디룸 예약 신청'}
             </h3>
             <p className="text-xs text-slate-500 mb-4">
               {selectedDate} · {startTime} ~ {computedEndTime} (총 {durationSlots * 0.5}시간)
@@ -1491,7 +1566,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                   className="w-full min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl tracking-widest"
                 />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  * 나중에 예약을 취소하거나 실시간 퇴실할 때 사용됩니다.
+                  * 나중에 예약을 취소하거나 퇴실할 때 사용됩니다.
                 </p>
               </div>
 
@@ -1522,12 +1597,12 @@ export default function StudentView({ onSwitchToAdmin }) {
         </div>
       )}
 
-      {/* 취소 / 실시간 퇴실 모달 */}
+      {/* 취소 / 퇴실 모달 */}
       {actionModal && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-sm w-full p-6 shadow-xl">
             <h3 className="text-base font-extrabold text-slate-900 mb-1">
-              {actionModal.type === 'early_exit' ? '실시간 퇴실 (조기 종료)' : '예약 취소 확인'}
+              {actionModal.type === 'early_exit' ? '퇴실하기 (조기 종료)' : '예약 취소 확인'}
             </h3>
             <p className="text-xs text-slate-500 mb-4 leading-relaxed">
               {actionModal.type === 'early_exit'

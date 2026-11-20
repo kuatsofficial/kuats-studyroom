@@ -23,6 +23,30 @@ function formatHHMM(timeStr) {
   return String(timeStr).slice(0, 5);
 }
 
+// KST 기준 YYYY-MM-DD 포맷
+function formatKSTDate(offsetDays = 0) {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000 + offsetDays * 24 * 60 * 60 * 1000);
+  const yyyy = kst.getUTCFullYear();
+  const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(kst.getUTCDate()).padStart(2, '0');
+  const label = `${mm}/${dd} (${['일', '월', '화', '수', '목', '금', '토'][kst.getUTCDay()]})`;
+  return {
+    dateStr: `${yyyy}-${mm}-${dd}`,
+    label,
+    isToday: offsetDays === 0,
+  };
+}
+
+// 과거 7일 전 ~ 오늘 ~ 7일 후 날짜 목록 생성
+function getAdminRangeDays() {
+  const list = [];
+  for (let offset = -7; offset <= 7; offset++) {
+    list.push(formatKSTDate(offset));
+  }
+  return list;
+}
+
 export default function AdminView({ onSwitchToStudent }) {
   const [sessionUser, setSessionUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
@@ -32,24 +56,23 @@ export default function AdminView({ onSwitchToStudent }) {
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
-  // 모바일 하단/상단 탭: 'members' | 'modes' | 'reservations'
   const [activeTab, setActiveTab] = useState('members');
 
-  // 회원 관리 상태
   const [members, setMembers] = useState([]);
-  const [memberFilter, setMemberFilter] = useState('all'); // 'all' | 'pending' | 'associate' | 'regular'
+  const [memberFilter, setMemberFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [quickStudentId, setQuickStudentId] = useState('');
   const [loadingMembers, setLoadingMembers] = useState(false);
 
-  // 날짜별 운영 모드 상태
-  const days = useMemo(() => getNext8Days(), []);
+  const next8Days = useMemo(() => getNext8Days(), []);
+  const adminRangeDays = useMemo(() => getAdminRangeDays(), []);
+  const todayStr = useMemo(() => formatKSTDate(0).dateStr, []);
+
   const [dailyModes, setDailyModes] = useState({});
   const [loadingModes, setLoadingModes] = useState(false);
 
-  // 전체 예약 현황 상태
   const [reservations, setReservations] = useState([]);
-  const [selectedResDate, setSelectedResDate] = useState(days[0].dateStr);
+  const [selectedResDate, setSelectedResDate] = useState(todayStr);
   const [loadingRes, setLoadingRes] = useState(false);
 
   useEffect(() => {
@@ -108,7 +131,6 @@ export default function AdminView({ onSwitchToStudent }) {
     setSessionUser(null);
   };
 
-  // 1. 회원 목록 불러오기
   const fetchMembers = async () => {
     setLoadingMembers(true);
     try {
@@ -125,11 +147,10 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
-  // 2. 날짜별 모드 불러오기
   const fetchDailyModes = async () => {
     setLoadingModes(true);
     try {
-      const dateList = days.map((d) => d.dateStr);
+      const dateList = next8Days.map((d) => d.dateStr);
       const { data, error } = await supabase
         .from('daily_modes')
         .select('date, mode')
@@ -148,10 +169,13 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
-  // 3. 선택 날짜 예약 내역 불러오기
+  // 일주일(7일) 지난 예약 기록 자동 삭제 + 선택 날짜 예약 내역 조회
   const fetchReservationsByDate = async (targetDate = selectedResDate) => {
     setLoadingRes(true);
     try {
+      const sevenDaysAgoStr = formatKSTDate(-7).dateStr;
+      await supabase.from('reservations').delete().lt('date', sevenDaysAgoStr);
+
       const { data, error } = await supabase
         .from('reservations')
         .select('*')
@@ -179,7 +203,6 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   }, [selectedResDate]);
 
-  // 회원 등급 변경 (승인/정회원/준회원/반려)
   const handleUpdateMemberStatus = async (studentId, newStatus) => {
     try {
       const { error } = await supabase
@@ -193,7 +216,6 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
-  // 학번으로 빠른 정회원 승격
   const handleQuickPromoteRegular = async (e) => {
     e.preventDefault();
     const cleanId = quickStudentId.trim();
@@ -228,7 +250,6 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
-  // 날짜별 모드 변경 (study_room <-> reading_room)
   const handleChangeDateMode = async (dateStr, newMode) => {
     try {
       const { error } = await supabase
@@ -237,11 +258,10 @@ export default function AdminView({ onSwitchToStudent }) {
       if (error) throw error;
       setDailyModes((prev) => ({ ...prev, [dateStr]: newMode }));
     } catch (err) {
-      alert('운영 모드 변경 실패: ' + err.message);
+      alert('운영 설정 변경 실패: ' + err.message);
     }
   };
 
-  // 관리자 직권 예약 취소
   const handleAdminCancelReservation = async (res) => {
     if (
       !window.confirm(
@@ -291,7 +311,6 @@ export default function AdminView({ onSwitchToStudent }) {
     );
   }
 
-  // [화면 1] 관리자 로그인 화면 (모바일 최적화)
   if (!sessionUser) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center px-4 py-6">
@@ -359,10 +378,8 @@ export default function AdminView({ onSwitchToStudent }) {
     );
   }
 
-  // [화면 2] 관리자 대시보드 (모바일 카드형 UI)
   return (
     <div className="min-h-screen bg-slate-100 pb-16">
-      {/* 상단 고정 헤더 */}
       <header className="bg-slate-900 text-white sticky top-0 z-30 shadow-sm">
         <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -386,7 +403,6 @@ export default function AdminView({ onSwitchToStudent }) {
           </div>
         </div>
 
-        {/* 모바일 친화적 3단 네비게이션 탭 */}
         <div className="bg-slate-800/90 border-t border-slate-700">
           <div className="max-w-5xl mx-auto px-3.5 sm:px-4 grid grid-cols-3 gap-1 py-1.5">
             <button
@@ -417,7 +433,7 @@ export default function AdminView({ onSwitchToStudent }) {
               }`}
             >
               <Calendar className="w-4 h-4" />
-              <span>운영 모드</span>
+              <span>공간 지정</span>
             </button>
 
             <button
@@ -437,10 +453,9 @@ export default function AdminView({ onSwitchToStudent }) {
       </header>
 
       <main className="max-w-5xl mx-auto px-3.5 sm:px-4 mt-4 sm:mt-6 space-y-4">
-        {/* ================= TAB 1: 회원 승인 및 등급 관리 ================= */}
+        {/* ================= TAB 1: 회원 관리 ================= */}
         {activeTab === 'members' && (
           <>
-            {/* 빠른 정회원 승격 카드 */}
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
               <h2 className="text-sm font-extrabold text-slate-800 mb-2 flex items-center gap-1.5">
                 <UserPlus className="w-4 h-4 text-indigo-600" /> 학번으로 빠른 정회원 승격
@@ -465,7 +480,6 @@ export default function AdminView({ onSwitchToStudent }) {
               </form>
             </section>
 
-            {/* 필터 + 검색 + 회원 카드 리스트 */}
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-extrabold text-slate-800">
@@ -479,7 +493,6 @@ export default function AdminView({ onSwitchToStudent }) {
                 </button>
               </div>
 
-              {/* 상태 필터 칩 */}
               <div className="flex gap-1.5 overflow-x-auto pb-1">
                 {[
                   { key: 'all', label: `전체 (${members.length})` },
@@ -508,7 +521,6 @@ export default function AdminView({ onSwitchToStudent }) {
                 ))}
               </div>
 
-              {/* 이름/학번/학과 검색 */}
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
@@ -520,7 +532,6 @@ export default function AdminView({ onSwitchToStudent }) {
                 />
               </div>
 
-              {/* 모바일 카드 리스트 */}
               {loadingMembers ? (
                 <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
               ) : filteredMembers.length === 0 ? (
@@ -566,7 +577,6 @@ export default function AdminView({ onSwitchToStudent }) {
                         </span>
                       </div>
 
-                      {/* 엄지손가락으로 누르기 쉬운 액션 버튼 줄 */}
                       <div className="grid grid-cols-2 sm:flex sm:justify-end gap-2 pt-1">
                         {m.status === 'pending' && (
                           <>
@@ -625,16 +635,16 @@ export default function AdminView({ onSwitchToStudent }) {
           </>
         )}
 
-        {/* ================= TAB 2: 날짜별 운영 모드 설정 ================= */}
+        {/* ================= TAB 2: 날짜별 공간 지정 ================= */}
         {activeTab === 'modes' && (
           <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-extrabold text-slate-800">
-                  날짜별 공간 운영 모드 (오늘~7일 후)
+                  날짜별 공간 지정 (오늘~7일 후)
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  미지정 날짜는 기본적으로 <strong>스터디룸 모드</strong>로 운영됩니다.
+                  미지정 날짜는 기본적으로 <strong>스터디룸</strong>으로 운영됩니다.
                 </p>
               </div>
               <button
@@ -649,7 +659,7 @@ export default function AdminView({ onSwitchToStudent }) {
               <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
             ) : (
               <div className="space-y-2.5">
-                {days.map((d) => {
+                {next8Days.map((d) => {
                   const current =
                     dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
                   return (
@@ -667,7 +677,7 @@ export default function AdminView({ onSwitchToStudent }) {
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-1.5 sm:w-64">
+                      <div className="grid grid-cols-2 gap-1.5 sm:w-72">
                         <button
                           type="button"
                           onClick={() => handleChangeDateMode(d.dateStr, 'study_room')}
@@ -677,7 +687,7 @@ export default function AdminView({ onSwitchToStudent }) {
                               : 'bg-white text-slate-600 border-slate-200'
                           }`}
                         >
-                          스터디룸 모드
+                          스터디룸
                         </button>
                         <button
                           type="button"
@@ -688,7 +698,7 @@ export default function AdminView({ onSwitchToStudent }) {
                               : 'bg-white text-slate-600 border-slate-200'
                           }`}
                         >
-                          열람실 모드
+                          열람실(시험기간)
                         </button>
                       </div>
                     </div>
@@ -699,37 +709,46 @@ export default function AdminView({ onSwitchToStudent }) {
           </section>
         )}
 
-        {/* ================= TAB 3: 전체 예약 현황 및 직권 취소 ================= */}
+        {/* ================= TAB 3: 예약 현황 (과거 7일 조회 + 7일 경과 자동 삭제) ================= */}
         {activeTab === 'reservations' && (
           <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-extrabold text-slate-800">
-                날짜별 예약 내역 ({reservations.length}건)
-              </h2>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-800">
+                  예약 현황 ({reservations.length}건)
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  과거 7일 기록까지 조회 가능하며, 7일이 지난 기록은 자동 삭제됩니다.
+                </p>
+              </div>
               <button
                 onClick={() => fetchReservationsByDate(selectedResDate)}
-                className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1"
+                className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
               >
                 <RefreshCw className="w-3.5 h-3.5" /> 새로고침
               </button>
             </div>
 
-            {/* 날짜 가로 스크롤 선택 */}
             <div className="flex gap-2 overflow-x-auto pb-1 snap-x">
-              {days.map((d) => {
+              {adminRangeDays.map((d) => {
                 const active = d.dateStr === selectedResDate;
                 return (
                   <button
                     key={d.dateStr}
                     type="button"
                     onClick={() => setSelectedResDate(d.dateStr)}
-                    className={`snap-start min-w-[74px] min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-bold border shrink-0 transition ${
+                    className={`snap-start min-w-[78px] min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-bold border shrink-0 transition ${
                       active
                         ? 'bg-slate-900 text-white border-slate-900'
                         : 'bg-white text-slate-700 border-slate-200'
                     }`}
                   >
-                    {d.label}
+                    <div>{d.label}</div>
+                    {d.isToday && (
+                      <div className={`text-[10px] ${active ? 'text-emerald-300' : 'text-emerald-600'}`}>
+                        오늘
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -751,7 +770,9 @@ export default function AdminView({ onSwitchToStudent }) {
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2">
                         <span className="px-2 py-0.5 rounded bg-slate-800 text-white text-xs font-bold">
-                          {res.mode === 'reading_room' ? `열람실 ${res.seat_id}` : '스터디룸'}
+                          {res.mode === 'reading_room'
+                            ? `열람실(시험기간) ${res.seat_id}`
+                            : '스터디룸'}
                         </span>
                         <span className="text-sm font-extrabold text-slate-900">
                           {formatHHMM(res.start_time)} ~ {formatHHMM(res.end_time)}
