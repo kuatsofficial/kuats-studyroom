@@ -7,7 +7,6 @@ import {
   generateTimeSlots,
   isSlotPast,
   isReservationInProgress,
-  TABLES,
 } from './utils';
 import {
   Calendar,
@@ -20,9 +19,29 @@ import {
   XCircle,
   AlertCircle,
   RefreshCw,
+  ArrowUp,
 } from 'lucide-react';
 
 const READING_ROOM_COOLDOWN_MS = 10 * 60 * 1000;
+
+// 실제 열람실 도면 기준 테이블 & 좌석 배치
+const ROOM_LAYOUT = [
+  {
+    name: 'A 테이블',
+    topSeats: ['A-1', 'A-2'],
+    bottomSeats: ['A-3', 'A-4'],
+  },
+  {
+    name: 'B 테이블',
+    topSeats: ['B-5', 'B-6'],
+    bottomSeats: ['B-7', 'B-8'],
+  },
+  {
+    name: 'C 테이블',
+    topSeats: ['C-9', 'C-10'],
+    bottomSeats: ['C-11', 'C-12'],
+  },
+];
 
 // "HH:MM:SS" 또는 "HH:MM" -> "HH:MM"으로 통일
 function formatHHMM(timeStr) {
@@ -144,7 +163,7 @@ export default function StudentView({ onSwitchToAdmin }) {
         name: profile.name,
         studentId: profile.student_id,
         department: profile.department,
-        status: profile.status, // 'pending' | 'associate' | 'regular' | 'rejected'
+        status: profile.status,
         isRegular: profile.status === 'regular',
       });
     } catch (err) {
@@ -154,7 +173,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     }
   };
 
-  // 회원가입 신청 처리 (이름 + 학번 + 학과/학부 -> pending 상태로 저장)
+  // 회원가입 신청 처리
   const handleStudentSignup = async (e) => {
     e.preventDefault();
     setLoginError('');
@@ -239,7 +258,6 @@ export default function StudentView({ onSwitchToAdmin }) {
         .maybeSingle();
 
       if (modeErr) throw modeErr;
-      // 열람실 모드로 지정되지 않은 날짜는 기본으로 무조건 스터디룸 모드
       const resolvedMode = modeData?.mode === 'reading_room' ? 'reading_room' : 'study_room';
       setCurrentMode(resolvedMode);
 
@@ -253,7 +271,7 @@ export default function StudentView({ onSwitchToAdmin }) {
         setSelectedSeat('A-1');
       }
 
-      // 1. 전체 활성 예약만 조회 (다른 사용자에게는 취소 자리가 즉시 빈자리로 노출)
+      // 1. 전체 활성 예약만 조회
       const { data: pubData, error: pubErr } = await supabase
         .from('public_reservations')
         .select('*')
@@ -600,7 +618,6 @@ export default function StudentView({ onSwitchToAdmin }) {
         return;
       }
 
-      // 취소한 본인(student_id)이 최근 10분 내 동일 열람실 좌석을 취소했는지 DB 재검증
       if (currentMode === 'reading_room') {
         const cooldownCutoffISO = new Date(Date.now() - READING_ROOM_COOLDOWN_MS).toISOString();
         const { data: cooldownCheck } = await supabase
@@ -755,31 +772,71 @@ export default function StudentView({ onSwitchToAdmin }) {
     }
   };
 
-  // [화면 1] 로그인 / 회원가입 신청 화면
+  // 도면 내 개별 좌석 렌더링 (등받이 의자 모양 포함)
+  const renderSeatButton = (seatId, position) => {
+    const isSelected = selectedSeat === seatId;
+    return (
+      <button
+        key={seatId}
+        type="button"
+        onClick={() => setSelectedSeat(seatId)}
+        className="group flex flex-col items-center focus:outline-none active:scale-95 transition-transform"
+        aria-label={`${seatId} 좌석 선택`}
+      >
+        {position === 'top' && (
+          <span
+            className={`w-10 sm:w-12 h-2 rounded-full mb-1 transition-colors ${
+              isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
+            }`}
+          />
+        )}
+        <span
+          className={`w-14 sm:w-16 h-11 sm:h-12 rounded-xl border-2 flex items-center justify-center text-xs sm:text-sm font-extrabold transition-all ${
+            isSelected
+              ? 'bg-slate-900 text-white border-slate-900 shadow-md ring-2 ring-emerald-400'
+              : 'bg-emerald-50/90 text-slate-800 border-emerald-700 hover:bg-emerald-100'
+          }`}
+        >
+          {seatId}
+        </span>
+        {position === 'bottom' && (
+          <span
+            className={`w-10 sm:w-12 h-2 rounded-full mt-1 transition-colors ${
+              isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
+            }`}
+          />
+        )}
+      </button>
+    );
+  };
+
+  // [화면 1] 로그인 / 회원가입 신청 화면 (모바일 최적화)
   if (!studentInfo) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
+      <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center px-4 py-6">
+        <div className="max-w-md w-full bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
           <div className="text-center mb-5">
             <span className="inline-block px-3 py-1 bg-rose-50 text-rose-700 text-xs font-bold rounded-full mb-2">
               편입연 공간 통합 예약 시스템
             </span>
-            <h1 className="text-2xl font-extrabold text-slate-900">열람실 · 스터디룸 예약</h1>
-            <p className="text-xs text-slate-500 mt-1">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900">
+              열람실 · 스터디룸 예약
+            </h1>
+            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
               {authMode === 'login'
                 ? '승인된 회원은 이름과 10자리 학번으로 바로 입장할 수 있습니다.'
                 : '이름·학번·학과/학부를 입력해 가입 신청하면 관리자 확인 후 준회원으로 등록됩니다.'}
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl mb-5">
+          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-2xl mb-5">
             <button
               type="button"
               onClick={() => {
                 setAuthMode('login');
                 setLoginError('');
               }}
-              className={`py-2 text-xs font-bold rounded-lg transition ${
+              className={`min-h-[42px] text-xs font-bold rounded-xl transition ${
                 authMode === 'login' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
               }`}
             >
@@ -792,7 +849,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                 setLoginError('');
                 setLoginMessage('');
               }}
-              className={`py-2 text-xs font-bold rounded-lg transition ${
+              className={`min-h-[42px] text-xs font-bold rounded-xl transition ${
                 authMode === 'signup' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
               }`}
             >
@@ -802,32 +859,35 @@ export default function StudentView({ onSwitchToAdmin }) {
 
           <form
             onSubmit={authMode === 'login' ? handleStudentLogin : handleStudentSignup}
-            className="space-y-3.5"
+            className="space-y-4"
           >
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">이름</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">이름</label>
               <input
                 type="text"
                 required
+                autoComplete="name"
                 placeholder="박신우"
                 value={inputName}
                 onChange={(e) => setInputName(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">
                 학번 (숫자 10자리)
               </label>
               <input
                 type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 required
                 maxLength={10}
                 placeholder="2026170123"
                 value={inputStudentId}
                 onChange={(e) => setInputStudentId(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none tracking-wider"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none tracking-wider"
               />
               <p className="text-[11px] text-slate-400 mt-1">
                 입력된 자릿수: {inputStudentId.length} / 10자리
@@ -836,14 +896,14 @@ export default function StudentView({ onSwitchToAdmin }) {
 
             {authMode === 'signup' && (
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">학과 / 학부</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">학과 / 학부</label>
                 <input
                   type="text"
                   required
                   placeholder="예: 경영학과, 컴퓨터학과, 자유전공학부"
                   value={inputDepartment}
                   onChange={(e) => setInputDepartment(e.target.value)}
-                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                 />
               </div>
             )}
@@ -864,7 +924,7 @@ export default function StudentView({ onSwitchToAdmin }) {
             <button
               type="submit"
               disabled={loginLoading}
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm transition shadow-sm"
+              className="w-full min-h-[48px] py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-xl text-sm transition shadow-sm"
             >
               {loginLoading
                 ? '확인 중...'
@@ -878,7 +938,7 @@ export default function StudentView({ onSwitchToAdmin }) {
             <button
               type="button"
               onClick={onSwitchToAdmin}
-              className="text-xs text-slate-400 hover:text-slate-600 underline"
+              className="text-xs text-slate-400 hover:text-slate-600 underline py-2"
             >
               편입연 관리자 페이지로 이동
             </button>
@@ -892,7 +952,7 @@ export default function StudentView({ onSwitchToAdmin }) {
   if (studentInfo.status !== 'associate' && studentInfo.status !== 'regular') {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg border border-slate-200 p-8 text-center space-y-4">
+        <div className="max-w-md w-full bg-white rounded-3xl shadow-lg border border-slate-200 p-7 text-center space-y-4">
           <div className="inline-flex px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold">
             {studentInfo.status === 'pending' ? '가입 승인 대기 중' : '가입 승인 반려'}
           </div>
@@ -910,7 +970,7 @@ export default function StudentView({ onSwitchToAdmin }) {
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full py-2.5 bg-slate-900 text-white text-xs font-bold rounded-xl"
+            className="w-full min-h-[46px] py-2.5 bg-slate-900 text-white text-xs font-bold rounded-xl"
           >
             돌아가기
           </button>
@@ -920,67 +980,74 @@ export default function StudentView({ onSwitchToAdmin }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20">
+    <div className="min-h-screen bg-slate-50 pb-28">
+      {/* 모바일 친화적 상단 헤더 */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-extrabold text-slate-900">편입연 공간 예약</h1>
-            {studentInfo.isRegular ? (
-              <span className="px-2.5 py-0.5 bg-indigo-100 text-indigo-800 text-xs font-bold rounded-full flex items-center gap-1">
-                <UserCheck className="w-3.5 h-3.5" /> 정회원 (열람실 무제한)
-              </span>
-            ) : (
-              <span className="px-2.5 py-0.5 bg-amber-100 text-amber-800 text-xs font-bold rounded-full">
-                준회원 (열람실 일 4시간 제한)
-              </span>
-            )}
+        <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-2.5 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h1 className="text-base sm:text-lg font-extrabold text-slate-900 truncate">
+                편입연 공간 예약
+              </h1>
+              {studentInfo.isRegular ? (
+                <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 text-[11px] font-bold rounded-full flex items-center gap-1">
+                  <UserCheck className="w-3 h-3" /> 정회원
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[11px] font-bold rounded-full">
+                  준회원
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] sm:text-xs text-slate-500 truncate mt-0.5">
+              {studentInfo.name} · {studentInfo.studentId} ({studentInfo.department})
+            </p>
           </div>
 
-          <div className="flex items-center gap-3 text-sm">
-            <span className="font-medium text-slate-700">
-              {studentInfo.name} ({studentInfo.studentId} · {studentInfo.department})
-            </span>
-            <button
-              onClick={handleLogout}
-              className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg"
-            >
-              로그아웃
-            </button>
-          </div>
+          <button
+            onClick={handleLogout}
+            className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 rounded-xl shrink-0"
+          >
+            로그아웃
+          </button>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 mt-6 space-y-6">
-        {/* 1. 날짜 선택 */}
+      <main className="max-w-5xl mx-auto px-3.5 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6">
+        {/* 1. 날짜 선택 (모바일 가로 스와이프 + 데스크톱 8열) */}
         <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-bold text-slate-700 flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-emerald-600" /> 예약 날짜 선택 (최대 7일 전 예약 가능)
+            <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+              <Calendar className="w-4 h-4 text-emerald-600" /> 날짜 선택 (최대 7일 전)
             </h2>
             <button
               onClick={fetchScheduleAndReservations}
-              className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1"
+              className="min-h-[32px] px-2.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-lg flex items-center gap-1"
             >
               <RefreshCw className="w-3.5 h-3.5" /> 새로고침
             </button>
           </div>
 
-          <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+          <div className="flex sm:grid sm:grid-cols-8 gap-2 overflow-x-auto pb-1 snap-x">
             {days.map((d) => {
               const active = d.dateStr === selectedDate;
               return (
                 <button
                   key={d.dateStr}
                   onClick={() => setSelectedDate(d.dateStr)}
-                  className={`py-2.5 px-2 rounded-xl text-xs font-bold border transition ${
+                  className={`snap-start min-w-[74px] sm:min-w-0 min-h-[52px] py-2 px-2.5 rounded-xl text-xs font-bold border transition flex flex-col items-center justify-center shrink-0 ${
                     active
                       ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                   }`}
                 >
-                  <div>{d.label}</div>
+                  <span>{d.label}</span>
                   {d.isToday && (
-                    <span className={`text-[10px] ${active ? 'text-emerald-300' : 'text-emerald-600'}`}>
+                    <span
+                      className={`text-[10px] mt-0.5 ${
+                        active ? 'text-emerald-300' : 'text-emerald-600'
+                      }`}
+                    >
                       오늘
                     </span>
                   )}
@@ -990,91 +1057,108 @@ export default function StudentView({ onSwitchToAdmin }) {
           </div>
 
           <div
-            className={`mt-4 p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 ${
+            className={`mt-3.5 p-3 rounded-xl border ${
               currentMode === 'reading_room'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-sky-50 border-sky-200 text-sky-900'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                : 'bg-sky-50 border-sky-200 text-sky-950'
             }`}
           >
-            <div>
-              <span className="text-xs font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-white/80 mr-2">
-                {currentMode === 'reading_room' ? '열람실 모드 (개인석 12자리)' : '스터디룸 모드 (방 전체 대관)'}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-white/90">
+                {currentMode === 'reading_room' ? '열람실 모드 (12석)' : '스터디룸 모드 (전체 대관)'}
               </span>
-              <span className="text-sm font-semibold">
+              <span className="text-xs font-semibold">
                 {currentMode === 'reading_room'
-                  ? '운영시간: 24시간 개방 (00:00 ~ 24:00) · 1인 1좌석 예약 · 본인 취소 시 동일 좌석 10분 재예약 제한'
-                  : '운영시간: 12:00 ~ 22:00 · 2인 이상(정회원 1인 필수) · 최대 4시간'}
+                  ? '24시간 개방 · 1인 1좌석 · 본인 취소 시 동일 좌석 10분 제한'
+                  : '12:00~22:00 · 2인 이상(정회원 1인 필수) · 최대 4시간'}
               </span>
             </div>
           </div>
         </section>
 
-        {/* 2. 열람실 좌석 선택 */}
+        {/* 2. 열람실 좌석 배치도 (이미지 도면 그대로 구현: A/B/C 테이블 + 의자 + 하단 입구) */}
         {currentMode === 'reading_room' && (
-          <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-            <h2 className="text-sm font-bold text-slate-700 mb-3">
-              좌석 선택 (테이블별 4석 · 총 12석)
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {TABLES.map((table) => (
-                <div
-                  key={table.name}
-                  className="p-4 rounded-xl bg-slate-50 border border-slate-200"
-                >
-                  <div className="text-center text-xs font-bold text-slate-500 mb-3 pb-1.5 border-b border-slate-200">
-                    {table.name}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2.5">
-                    {table.seats.map((seat) => {
-                      const isSelected = selectedSeat === seat;
-                      return (
-                        <button
-                          key={seat}
-                          onClick={() => setSelectedSeat(seat)}
-                          className={`py-3 rounded-xl font-extrabold text-sm border-2 transition ${
-                            isSelected
-                              ? 'bg-slate-900 text-white border-slate-900 shadow-md'
-                              : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-400'
-                          }`}
-                        >
-                          {seat}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+          <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-slate-800">
+                열람실 좌석 배치도 (터치하여 선택)
+              </h2>
+              <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-slate-900 text-white">
+                선택됨: {selectedSeat}
+              </span>
             </div>
+
+            {/* 모바일에서는 가로 스크롤로 비율 유지, 데스크톱에서는 전체 한눈에 표시 */}
+            <div className="overflow-x-auto pb-2">
+              <div className="min-w-[540px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-5 pt-6 pb-8">
+                <div className="grid grid-cols-3 gap-5">
+                  {ROOM_LAYOUT.map((table) => (
+                    <div key={table.name} className="flex flex-col items-center">
+                      {/* 위쪽 좌석 2개 */}
+                      <div className="flex items-center justify-center gap-2.5 mb-2.5">
+                        {table.topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                      </div>
+
+                      {/* 가운데 테이블 박스 */}
+                      <div className="w-full h-14 sm:h-16 rounded-2xl bg-white border-2 border-stone-300 shadow-xs flex items-center justify-center">
+                        <span className="text-sm sm:text-base font-extrabold text-stone-700">
+                          {table.name}
+                        </span>
+                      </div>
+
+                      {/* 아래쪽 좌석 2개 */}
+                      <div className="flex items-center justify-center gap-2.5 mt-2.5">
+                        {table.bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 왼쪽 하단 출입구 표시 */}
+                <div className="absolute -bottom-6 left-10 sm:left-14 flex flex-col items-center">
+                  <div className="flex items-center gap-6 bg-stone-100 px-3">
+                    <span className="w-1 h-4 bg-stone-500 rounded-full" />
+                    <ArrowUp className="w-5 h-5 text-stone-600 stroke-[2.5]" />
+                    <span className="w-1 h-4 bg-stone-500 rounded-full" />
+                  </div>
+                  <span className="text-xs font-extrabold text-stone-600 mt-0.5">입구</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-400 mt-4">
+              * 좌우로 밀면 전체 배치도를 볼 수 있으며, 원하는 좌석 번호를 누르면 아래 시간표가 해당 좌석 기준으로 바뀝니다.
+            </p>
           </section>
         )}
 
         {/* 3. 타임라인 바 + [시작 시간 + 이용 시간] 선택 */}
-        <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+        <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
               <Clock className="w-4 h-4 text-emerald-600" />
               {currentMode === 'reading_room'
-                ? `[${selectedSeat}] 24시간 예약 현황 및 시간 선택`
-                : '[스터디룸 전체] 운영시간(12:00~22:00) 예약 현황 및 시간 선택'}
+                ? `[${selectedSeat}] 예약 현황 및 시간 선택`
+                : '[스터디룸 전체] 예약 현황 및 시간 선택'}
             </h2>
 
             <div className="flex items-center gap-3 text-xs font-semibold">
               <span className="flex items-center gap-1">
-                <span className="w-3.5 h-3.5 rounded bg-emerald-500 inline-block" /> 빈자리(예약 가능)
+                <span className="w-3 h-3 rounded bg-emerald-500 inline-block" /> 빈자리
               </span>
               <span className="flex items-center gap-1">
-                <span className="w-3.5 h-3.5 rounded bg-gray-300 inline-block" /> 예약됨
+                <span className="w-3 h-3 rounded bg-gray-300 inline-block" /> 예약됨
               </span>
             </div>
           </div>
 
-          {/* 1시간 단위 칸 구분선 위에 정확히 시간 숫자가 놓이는 타임라인 바 */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+          {/* 1시간 단위 타임라인 바 */}
+          <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
             {loadingData ? (
               <div className="h-12 rounded-xl bg-slate-200 animate-pulse" />
             ) : (
               <div className="overflow-x-auto pb-1">
-                <div className="min-w-[680px]">
+                <div className="min-w-[640px]">
                   <div className="relative h-5 text-[11px] font-bold text-slate-600 mb-1 select-none">
                     {Array.from(
                       {
@@ -1149,19 +1233,19 @@ export default function StudentView({ onSwitchToAdmin }) {
             )}
 
             <p className="text-[11px] text-slate-500">
-              - 구분선 위 숫자가 각 시각(00~24시 또는 12~22시)이며, 초록색은 빈자리, 회색은 이미 예약된 시간입니다.
+              * 초록색은 예약 가능한 빈자리, 회색은 이미 예약된 시간입니다.
             </p>
           </div>
 
-          {/* 시작 시간 & 이용 시간 선택 컨트롤 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* 시작 시간 & 이용 시간 선택 컨트롤 (모바일 터치 크기 확보) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1.5">1. 시작 시간</label>
               <select
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 disabled={availableStartSlots.length === 0}
-                className="w-full px-3.5 py-2.5 text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
               >
                 {availableStartSlots.length === 0 ? (
                   <option value="">예약 가능한 시작 시간 없음</option>
@@ -1176,11 +1260,11 @@ export default function StudentView({ onSwitchToAdmin }) {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">2. 이용 시간 (몇 시간)</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">2. 이용 시간</label>
               <select
                 value={durationSlots}
                 onChange={(e) => setDurationSlots(Number(e.target.value))}
-                className="w-full px-3.5 py-2.5 text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
               >
                 {durationOptions.map((opt) => (
                   <option key={opt.slots} value={opt.slots}>
@@ -1190,47 +1274,18 @@ export default function StudentView({ onSwitchToAdmin }) {
               </select>
             </div>
           </div>
-
-          <div className="p-4 bg-slate-900 text-white rounded-xl flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm">
-              <span className="text-emerald-400 font-bold mr-2">
-                {currentMode === 'reading_room' ? selectedSeat : '스터디룸 전체'}
-              </span>
-              {rangeValidation.valid ? (
-                <span>
-                  예약 예정 시간: <strong>{startTime} ~ {computedEndTime}</strong> (총{' '}
-                  {durationSlots * 0.5}시간)
-                </span>
-              ) : (
-                <span className="text-rose-300 font-semibold">{rangeValidation.reason}</span>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={handleOpenBookingModal}
-              disabled={!rangeValidation.valid}
-              className={`px-5 py-2.5 text-sm font-bold rounded-xl shadow transition ${
-                rangeValidation.valid
-                  ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                  : 'bg-slate-700 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              예약 신청하기
-            </button>
-          </div>
         </section>
 
         {/* 4. 내 예약 내역 */}
-        <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+        <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
           <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" /> 내 활성 예약 내역 ({myReservations.length}건)
           </h2>
 
           {myReservations.length === 0 ? (
-            <p className="text-xs text-slate-400 py-4 text-center">현재 예약된 내역이 없습니다.</p>
+            <p className="text-xs text-slate-400 py-6 text-center">현재 예약된 내역이 없습니다.</p>
           ) : (
-            <div className="space-y-2.5">
+            <div className="space-y-3">
               {myReservations.map((res) => {
                 const sHHMM = formatHHMM(res.start_time);
                 const eHHMM = formatHHMM(res.end_time);
@@ -1238,10 +1293,10 @@ export default function StudentView({ onSwitchToAdmin }) {
                 return (
                   <div
                     key={res.id}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3"
+                    className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-white">
                           {res.mode === 'reading_room' ? `열람실 ${res.seat_id}` : '스터디룸 전체'}
                         </span>
@@ -1261,7 +1316,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-end">
                       {inProgress ? (
                         <button
                           onClick={() => {
@@ -1269,7 +1324,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                             setActionError('');
                             setActionModal({ type: 'early_exit', reservation: res });
                           }}
-                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg flex items-center gap-1"
+                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
                         >
                           <LogOut className="w-3.5 h-3.5" /> 실시간 퇴실
                         </button>
@@ -1280,7 +1335,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                             setActionError('');
                             setActionModal({ type: 'cancel', reservation: res });
                           }}
-                          className="px-3 py-1.5 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-lg flex items-center gap-1"
+                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
                         >
                           <XCircle className="w-3.5 h-3.5" /> 예약 취소
                         </button>
@@ -1294,10 +1349,41 @@ export default function StudentView({ onSwitchToAdmin }) {
         </section>
       </main>
 
-      {/* 예약 신청 모달 */}
+      {/* 모바일/데스크톱 하단 고정 예약 실행 바 */}
+      <div className="fixed bottom-0 inset-x-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 text-white z-30">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <div className="min-w-0 text-xs sm:text-sm">
+            <div className="font-extrabold text-emerald-400">
+              {currentMode === 'reading_room' ? `좌석 ${selectedSeat}` : '스터디룸 전체'}
+            </div>
+            {rangeValidation.valid ? (
+              <div className="truncate text-slate-200">
+                <strong>{startTime} ~ {computedEndTime}</strong> ({durationSlots * 0.5}시간)
+              </div>
+            ) : (
+              <div className="truncate text-rose-300 font-semibold">{rangeValidation.reason}</div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleOpenBookingModal}
+            disabled={!rangeValidation.valid}
+            className={`min-h-[44px] px-5 py-2.5 text-sm font-bold rounded-xl shadow shrink-0 transition ${
+              rangeValidation.valid
+                ? 'bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white'
+                : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+            }`}
+          >
+            예약 신청하기
+          </button>
+        </div>
+      </div>
+
+      {/* 예약 신청 모달 (모바일 바텀시트 + 데스크톱 중앙 모달) */}
       {showBookingModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl">
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-md w-full p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-extrabold text-slate-900 mb-1">
               {currentMode === 'reading_room' ? `열람실 [${selectedSeat}] 예약` : '스터디룸 전체 대관 신청'}
             </h3>
@@ -1305,16 +1391,18 @@ export default function StudentView({ onSwitchToAdmin }) {
               {selectedDate} · {startTime} ~ {computedEndTime} (총 {durationSlots * 0.5}시간)
             </p>
 
-            <form onSubmit={handleConfirmBooking} className="space-y-3.5">
+            <form onSubmit={handleConfirmBooking} className="space-y-4">
               {currentMode === 'study_room' && (
                 <>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1">
                       <Users className="w-3.5 h-3.5" /> 동반자 학번 추가 (10자리 숫자, 최소 1명 이상)
                     </label>
                     <div className="flex gap-2">
                       <input
                         type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         maxLength={10}
                         placeholder="예: 2026170123"
                         value={companionInput}
@@ -1325,12 +1413,12 @@ export default function StudentView({ onSwitchToAdmin }) {
                             handleAddCompanionId();
                           }
                         }}
-                        className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-xl tracking-wider"
+                        className="flex-1 min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl tracking-wider"
                       />
                       <button
                         type="button"
                         onClick={handleAddCompanionId}
-                        className="px-4 py-2 text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white rounded-xl shrink-0"
+                        className="min-h-[44px] px-4 py-2 text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white rounded-xl shrink-0"
                       >
                         추가
                       </button>
@@ -1341,14 +1429,14 @@ export default function StudentView({ onSwitchToAdmin }) {
                         {companionList.map((cid) => (
                           <span
                             key={cid}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900"
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900"
                           >
                             <span>{cid}</span>
                             <button
                               type="button"
                               onClick={() => handleRemoveCompanionId(cid)}
                               aria-label={`${cid} 삭제`}
-                              className="text-emerald-700 hover:text-rose-600 font-extrabold leading-none"
+                              className="text-emerald-700 hover:text-rose-600 text-sm font-extrabold leading-none px-0.5"
                             >
                               ×
                             </button>
@@ -1357,31 +1445,31 @@ export default function StudentView({ onSwitchToAdmin }) {
                       </div>
                     )}
 
-                    <p className="text-[11px] text-slate-400 mt-1">
-                      - 학번 10자리를 입력 후 [추가]를 누르면 아래에 표시되며, × 버튼으로 지울 수 있습니다. (최소 1명 이상, 정회원 1명 필수)
+                    <p className="text-[11px] text-slate-400 mt-1.5">
+                      * 학번 10자리를 입력 후 [추가]를 누르면 아래에 표시되며, × 버튼으로 지울 수 있습니다. (최소 1명 이상, 정회원 1명 필수)
                     </p>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">총 사용 인원</label>
+                      <label className="block text-xs font-bold text-slate-700 mb-1.5">총 인원</label>
                       <input
                         type="number"
                         min={2}
                         max={20}
                         value={totalHeadcount}
                         onChange={(e) => setTotalHeadcount(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl"
+                        className="w-full min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl"
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="block text-xs font-bold text-slate-700 mb-1">사용 목적</label>
+                      <label className="block text-xs font-bold text-slate-700 mb-1.5">사용 목적</label>
                       <input
                         type="text"
                         placeholder="예: 전공 팀플, 스터디 회의"
                         value={purpose}
                         onChange={(e) => setPurpose(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl"
+                        className="w-full min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl"
                       />
                     </div>
                   </div>
@@ -1389,40 +1477,42 @@ export default function StudentView({ onSwitchToAdmin }) {
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1">
                   <Lock className="w-3.5 h-3.5" /> 일회성 예약 비밀번호 (숫자 4자리)
                 </label>
                 <input
                   type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   maxLength={4}
                   placeholder="숫자 4자리 (예: 1234)"
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value.replace(/[^0-9]/g, ''))}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl tracking-widest"
+                  className="w-full min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl tracking-widest"
                 />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  - 나중에 예약을 취소하거나 실시간 퇴실할 때 사용됩니다.
+                  * 나중에 예약을 취소하거나 실시간 퇴실할 때 사용됩니다.
                 </p>
               </div>
 
               {bookingError && (
-                <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600">
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600">
                   {bookingError}
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowBookingModal(false)}
-                  className="px-4 py-2 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl"
+                  className="flex-1 min-h-[46px] px-4 py-2.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl"
                 >
                   닫기
                 </button>
                 <button
                   type="submit"
                   disabled={bookingSubmitting}
-                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
+                  className="flex-[2] min-h-[46px] px-5 py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
                 >
                   {bookingSubmitting ? '처리 중...' : '최종 예약 확정'}
                 </button>
@@ -1434,12 +1524,12 @@ export default function StudentView({ onSwitchToAdmin }) {
 
       {/* 취소 / 실시간 퇴실 모달 */}
       {actionModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl">
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-sm w-full p-6 shadow-xl">
             <h3 className="text-base font-extrabold text-slate-900 mb-1">
               {actionModal.type === 'early_exit' ? '실시간 퇴실 (조기 종료)' : '예약 취소 확인'}
             </h3>
-            <p className="text-xs text-slate-500 mb-4">
+            <p className="text-xs text-slate-500 mb-4 leading-relaxed">
               {actionModal.type === 'early_exit'
                 ? '지금 퇴실하시면 현재 30분 단위 시간 이후의 잔여 시간이 즉시 빈자리로 반환됩니다.'
                 : actionModal.reservation?.mode === 'reading_room'
@@ -1450,11 +1540,13 @@ export default function StudentView({ onSwitchToAdmin }) {
             <form onSubmit={handleExecuteAction} className="space-y-3">
               <input
                 type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 maxLength={4}
                 placeholder="일회성 비밀번호 4자리"
                 value={actionPin}
                 onChange={(e) => setActionPin(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl text-center tracking-widest"
+                className="w-full min-h-[46px] px-3 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl text-center tracking-widest"
               />
 
               {actionError && (
@@ -1463,18 +1555,18 @@ export default function StudentView({ onSwitchToAdmin }) {
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-1">
+              <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setActionModal(null)}
-                  className="px-4 py-2 text-xs font-bold bg-slate-100 text-slate-700 rounded-xl"
+                  className="flex-1 min-h-[44px] px-4 py-2 text-xs font-bold bg-slate-100 text-slate-700 rounded-xl"
                 >
                   닫기
                 </button>
                 <button
                   type="submit"
                   disabled={actionSubmitting}
-                  className="px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-xl"
+                  className="flex-[2] min-h-[44px] px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-xl"
                 >
                   {actionSubmitting ? '확인 중...' : '확인'}
                 </button>
