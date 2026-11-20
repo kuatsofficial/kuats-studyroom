@@ -24,6 +24,25 @@ import {
 
 const READING_ROOM_COOLDOWN_MS = 10 * 60 * 1000;
 
+// 실제 열람실 도면 기준 테이블 & 좌석 배치
+const ROOM_TABLES = [
+  {
+    name: 'A 테이블',
+    topSeats: ['A-1', 'A-2'],
+    bottomSeats: ['A-3', 'A-4'],
+  },
+  {
+    name: 'B 테이블',
+    topSeats: ['B-5', 'B-6'],
+    bottomSeats: ['B-7', 'B-8'],
+  },
+  {
+    name: 'C 테이블',
+    topSeats: ['C-9', 'C-10'],
+    bottomSeats: ['C-11', 'C-12'],
+  },
+];
+
 // "HH:MM:SS" 또는 "HH:MM" -> "HH:MM"으로 통일
 function formatHHMM(timeStr) {
   if (!timeStr) return '00:00';
@@ -284,15 +303,16 @@ export default function StudentView({ onSwitchToAdmin }) {
         .eq('date', selectedDate)
         .eq('status', 'active');
 
-      const rawPub = !pubErr && pubData
-        ? pubData
-        : (
-            await supabase
-              .from('reservations')
-              .select('id, date, mode, seat_id, start_time, end_time, status')
-              .eq('date', selectedDate)
-              .eq('status', 'active')
-          ).data || [];
+      const rawPub =
+        !pubErr && pubData
+          ? pubData
+          : (
+              await supabase
+                .from('reservations')
+                .select('id, date, mode, seat_id, start_time, end_time, status')
+                .eq('date', selectedDate)
+                .eq('status', 'active')
+            ).data || [];
 
       const activeNotExpiredPub = rawPub.filter(
         (r) => !isReservationExpired(r.date || selectedDate, formatHHMM(r.end_time))
@@ -460,7 +480,6 @@ export default function StudentView({ onSwitchToAdmin }) {
     selectedSeat,
   ]);
 
-  // 구간별 타임라인 블록 계산 헬퍼 (열람실 오전/오후 2줄 또는 스터디룸 12시~22시)
   const buildBlocksForRange = (rangeStartMin, rangeEndMin) => {
     const span = rangeEndMin - rangeStartMin;
     return currentSeatReservations
@@ -487,7 +506,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     const cleanId = companionInput.trim();
 
     if (!isValidStudentId(cleanId)) {
-      setBookingError('동반자 학번은 숫자 10자리로 정확히 입력해 주세요. (예: 2026170123)');
+      setBookingError('동반자 학번은 숫자 10자리로 정확히 입력해 주세요.');
       return;
     }
     if (cleanId === studentInfo.studentId) {
@@ -502,14 +521,14 @@ export default function StudentView({ onSwitchToAdmin }) {
     const nextList = [...companionList, cleanId];
     setCompanionList(nextList);
     setCompanionInput('');
-    setTotalHeadcount((prev) => Math.max(Number(prev) || 2, nextList.length + 1));
+    setTotalHeadcount(nextList.length + 1);
   };
 
   const handleRemoveCompanionId = (targetId) => {
     setBookingError('');
     const nextList = companionList.filter((id) => id !== targetId);
     setCompanionList(nextList);
-    setTotalHeadcount((prev) => Math.max(2, Math.min(Number(prev) || 2, nextList.length + 1)));
+    setTotalHeadcount(Math.max(2, nextList.length + 1));
   };
 
   const handleOpenBookingModal = () => {
@@ -574,13 +593,13 @@ export default function StudentView({ onSwitchToAdmin }) {
       finalCompanions = [...companionList];
 
       if (finalCompanions.length < 1) {
-        setBookingError('스터디룸은 대표자 외 최소 1명 이상의 동반자 학번을 추가해야 합니다. (총 2인 이상)');
+        setBookingError('동반자 학번을 최소 1명 이상 추가해 주세요.');
         return;
       }
 
       for (const cid of finalCompanions) {
         if (!isValidStudentId(cid)) {
-          setBookingError(`동반자 학번(${cid})이 올바르지 않습니다. 숫자 10자리로 입력해 주세요.`);
+          setBookingError(`동반자 학번(${cid})이 올바르지 않습니다.`);
           return;
         }
         if (cid === studentInfo.studentId) {
@@ -589,8 +608,18 @@ export default function StudentView({ onSwitchToAdmin }) {
         }
       }
 
-      if (Number(totalHeadcount) < 2) {
-        setBookingError('총 사용 인원수는 최소 2명 이상이어야 합니다.');
+      const expectedHeadcount = finalCompanions.length + 1;
+      const numericHeadcount = Number(totalHeadcount);
+
+      if (numericHeadcount < 2) {
+        setBookingError('총 인원은 최소 2명 이상이어야 합니다.');
+        return;
+      }
+
+      if (numericHeadcount !== expectedHeadcount) {
+        setBookingError(
+          `본인(1명)과 동반자(${finalCompanions.length}명)를 포함한 인원(${expectedHeadcount}명)과 총 인원(${numericHeadcount}명)이 일치해야 합니다.`
+        );
         return;
       }
 
@@ -800,7 +829,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     }
   };
 
-  // 타임라인 구간 렌더링 (모바일에서 꽉 차게 들어오도록 압축)
+  // 타임라인 구간 렌더링
   const renderTimelineStrip = ({ titleBadge, startHour, cols, blocks }) => {
     return (
       <div className="space-y-1">
@@ -870,7 +899,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     );
   };
 
-  // 도면 내 개별 좌석 버튼 (등받이 의자 모양 포함)
+  // 도면 내 개별 좌석 버튼
   const renderSeatButton = (seatId, position) => {
     const isSelected = selectedSeat === seatId;
     return (
@@ -883,13 +912,13 @@ export default function StudentView({ onSwitchToAdmin }) {
       >
         {position === 'top' && (
           <span
-            className={`w-9 h-1.5 rounded-full mb-1 transition-colors ${
+            className={`w-10 h-1.5 rounded-full mb-1 transition-colors ${
               isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
             }`}
           />
         )}
         <span
-          className={`w-12 sm:w-14 h-10 sm:h-11 rounded-xl border-2 flex items-center justify-center text-xs font-extrabold transition-all ${
+          className={`w-13 sm:w-14 h-10 sm:h-11 rounded-xl border-2 flex items-center justify-center text-xs font-extrabold transition-all ${
             isSelected
               ? 'bg-slate-900 text-white border-slate-900 shadow-md ring-2 ring-emerald-400'
               : 'bg-emerald-50 text-slate-800 border-emerald-700 hover:bg-emerald-100'
@@ -899,7 +928,7 @@ export default function StudentView({ onSwitchToAdmin }) {
         </span>
         {position === 'bottom' && (
           <span
-            className={`w-9 h-1.5 rounded-full mt-1 transition-colors ${
+            className={`w-10 h-1.5 rounded-full mt-1 transition-colors ${
               isSelected ? 'bg-slate-900' : 'bg-emerald-700 group-hover:bg-emerald-800'
             }`}
           />
@@ -1154,7 +1183,6 @@ export default function StudentView({ onSwitchToAdmin }) {
             })}
           </div>
 
-          {/* '모드' 용어 제거 + '열람실(시험기간)' + 줄바꿈 이용 규칙 */}
           <div
             className={`mt-3.5 p-3.5 rounded-xl border ${
               currentMode === 'reading_room'
@@ -1186,7 +1214,7 @@ export default function StudentView({ onSwitchToAdmin }) {
           </div>
         </section>
 
-        {/* 2. 열람실(시험기간) 좌석 배치도 (A와 B는 떨어짐, B와 C는 붙어 있음 + 세로 스크롤 방지) */}
+        {/* 2. 열람실(시험기간) 좌석 배치도 (A와 B 사이만 떨어져 보이도록 구성) */}
         {currentMode === 'reading_room' && (
           <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
             <div className="flex items-center justify-between mb-3">
@@ -1202,53 +1230,51 @@ export default function StudentView({ onSwitchToAdmin }) {
               className="overflow-x-auto overflow-y-hidden pb-6"
               style={{ touchAction: 'pan-x' }}
             >
-              <div className="min-w-[600px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-5 pt-5 pb-7">
-                <div className="flex items-stretch justify-between gap-8">
+              <div className="min-w-[660px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-6 pt-5 pb-7">
+                <div className="flex items-stretch justify-between gap-12">
                   {/* A 테이블 (단독 분리) */}
-                  <div className="w-[185px] shrink-0 flex flex-col items-center">
-                    <div className="flex items-center justify-center gap-2 mb-2">
-                      {['A-1', 'A-2'].map((seatId) => renderSeatButton(seatId, 'top'))}
+                  <div className="w-[180px] shrink-0 flex flex-col items-center">
+                    <div className="flex items-center justify-center gap-2.5 mb-2">
+                      {ROOM_TABLES[0].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
                     </div>
                     <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
                       <span className="text-sm font-extrabold text-stone-700">A 테이블</span>
                     </div>
-                    <div className="flex items-center justify-center gap-2 mt-2">
-                      {['A-3', 'A-4'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                    <div className="flex items-center justify-center gap-2.5 mt-2">
+                      {ROOM_TABLES[0].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
                     </div>
                   </div>
 
-                  {/* B 테이블 + C 테이블 (서로 밀착 연결) */}
-                  <div className="flex-1 grid grid-cols-2 rounded-2xl border-2 border-stone-300 bg-white/60 p-2 gap-0">
-                    {/* B 테이블 */}
-                    <div className="flex flex-col items-center border-r-2 border-stone-300 pr-2">
-                      <div className="flex items-center justify-center gap-2 mb-2">
-                        {['B-5', 'B-6'].map((seatId) => renderSeatButton(seatId, 'top'))}
+                  {/* B + C 테이블 (A와는 넉넉히 떨어지고 B와 C는 나란히 붙어 배치) */}
+                  <div className="flex-1 flex items-stretch gap-4">
+                    <div className="flex-1 flex flex-col items-center">
+                      <div className="flex items-center justify-center gap-2.5 mb-2">
+                        {ROOM_TABLES[1].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
                       </div>
-                      <div className="w-full h-14 rounded-l-xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                      <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
                         <span className="text-sm font-extrabold text-stone-700">B 테이블</span>
                       </div>
-                      <div className="flex items-center justify-center gap-2 mt-2">
-                        {['B-7', 'B-8'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                      <div className="flex items-center justify-center gap-2.5 mt-2">
+                        {ROOM_TABLES[1].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
                       </div>
                     </div>
 
-                    {/* C 테이블 */}
-                    <div className="flex flex-col items-center pl-2">
-                      <div className="flex items-center justify-center gap-2 mb-2">
-                        {['C-9', 'C-10'].map((seatId) => renderSeatButton(seatId, 'top'))}
+                    <div className="flex-1 flex flex-col items-center">
+                      <div className="flex items-center justify-center gap-2.5 mb-2">
+                        {ROOM_TABLES[2].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
                       </div>
-                      <div className="w-full h-14 rounded-r-xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                      <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
                         <span className="text-sm font-extrabold text-stone-700">C 테이블</span>
                       </div>
-                      <div className="flex items-center justify-center gap-2 mt-2">
-                        {['C-11', 'C-12'].map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                      <div className="flex items-center justify-center gap-2.5 mt-2">
+                        {ROOM_TABLES[2].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
                       </div>
                     </div>
                   </div>
                 </div>
 
                 {/* 왼쪽 하단 출입구 표시 */}
-                <div className="absolute -bottom-6 left-10 flex flex-col items-center">
+                <div className="absolute -bottom-6 left-11 flex flex-col items-center">
                   <div className="flex items-center gap-5 bg-stone-100 px-2.5">
                     <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
                     <ArrowUp className="w-4 h-4 text-stone-600 stroke-[2.5]" />
@@ -1281,20 +1307,19 @@ export default function StudentView({ onSwitchToAdmin }) {
             </div>
           </div>
 
-          {/* 열람실은 오전/오후 2줄 압축, 스터디룸은 12시~22시 한 줄 압축 */}
           <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
             {loadingData ? (
               <div className="h-12 rounded-xl bg-slate-200 animate-pulse" />
             ) : currentMode === 'reading_room' ? (
               <>
                 {renderTimelineStrip({
-                  titleBadge: '오전 (00 ~ 12)',
+                  titleBadge: '오전 (00시~12시)',
                   startHour: 0,
                   cols: 12,
                   blocks: amBlocks,
                 })}
                 {renderTimelineStrip({
-                  titleBadge: '오후 (12 ~ 24)',
+                  titleBadge: '오후 (12시~24시)',
                   startHour: 12,
                   cols: 12,
                   blocks: pmBlocks,
@@ -1310,7 +1335,6 @@ export default function StudentView({ onSwitchToAdmin }) {
             )}
           </div>
 
-          {/* 시작 시간 & 이용 시간 선택 컨트롤 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1.5">1. 시작 시간</label>
@@ -1349,7 +1373,7 @@ export default function StudentView({ onSwitchToAdmin }) {
           </div>
         </section>
 
-        {/* 4. 내 활성 예약 내역 (종료 시 자동 삭제, 예약 중엔 [퇴실하기] 버튼 표시) */}
+        {/* 4. 내 활성 예약 내역 */}
         <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
           <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" /> 내 활성 예약 내역 ({myReservations.length}건)
@@ -1460,7 +1484,9 @@ export default function StudentView({ onSwitchToAdmin }) {
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-md w-full p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-extrabold text-slate-900 mb-1">
-              {currentMode === 'reading_room' ? `열람실(시험기간) [${selectedSeat}] 예약` : '스터디룸 예약 신청'}
+              {currentMode === 'reading_room'
+                ? `열람실(시험기간) [${selectedSeat}] 예약`
+                : '스터디룸 예약 신청'}
             </h3>
             <p className="text-xs text-slate-500 mb-4">
               {selectedDate} · {startTime} ~ {computedEndTime} (총 {durationSlots * 0.5}시간)
@@ -1471,7 +1497,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                 <>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1">
-                      <Users className="w-3.5 h-3.5" /> 동반자 학번 추가 (10자리 숫자, 최소 1명 이상)
+                      <Users className="w-3.5 h-3.5" /> 동반자 학번 추가(본인 제외)
                     </label>
                     <div className="flex gap-2">
                       <input
@@ -1521,7 +1547,7 @@ export default function StudentView({ onSwitchToAdmin }) {
                     )}
 
                     <p className="text-[11px] text-slate-400 mt-1.5">
-                      * 학번 10자리를 입력 후 [추가]를 누르면 아래에 표시되며, × 버튼으로 지울 수 있습니다. (최소 1명 이상, 정회원 1명 필수)
+                      * 학번 10자리를 입력 후 [추가]를 누르면 아래에 표시되며, × 버튼으로 지울 수 있습니다.
                     </p>
                   </div>
 
@@ -1536,6 +1562,9 @@ export default function StudentView({ onSwitchToAdmin }) {
                         onChange={(e) => setTotalHeadcount(e.target.value)}
                         className="w-full min-h-[44px] px-3 py-2 text-base sm:text-sm border border-slate-300 rounded-xl"
                       />
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        본인+동반자: {companionList.length + 1}명
+                      </p>
                     </div>
                     <div className="col-span-2">
                       <label className="block text-xs font-bold text-slate-700 mb-1.5">사용 목적</label>
