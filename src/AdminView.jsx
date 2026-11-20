@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
-import { getNext8Days, isValidStudentId } from './utils';
+import { isValidStudentId } from './utils';
 import {
   ShieldCheck,
   Users,
@@ -15,6 +15,7 @@ import {
   Search,
   Trash2,
   Ban,
+  PlusCircle,
 } from 'lucide-react';
 
 const ADMIN_EMAILS = ['kuats.official@gmail.com'];
@@ -39,7 +40,52 @@ function formatKSTDate(offsetDays = 0) {
   };
 }
 
-// 과거 7일 전 ~ 오늘 ~ 7일 후 날짜 목록 생성
+// "YYYY-MM-DD"에 n일 더하기 (UTC 기준 안전 계산)
+function addDaysToDateStr(dateStr, days) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  const yyyy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// 시작일~종료일 사이의 모든 YYYY-MM-DD 배열 생성
+function getDatesBetween(startStr, endStr) {
+  const dates = [];
+  let cur = startStr;
+  while (cur <= endStr) {
+    dates.push(cur);
+    cur = addDaysToDateStr(cur, 1);
+  }
+  return dates;
+}
+
+// 연속된 날짜 문자열 배열을 기간({ start, end, count }) 배열로 묶기
+function groupConsecutiveDates(sortedDateStrs) {
+  if (!sortedDateStrs || sortedDateStrs.length === 0) return [];
+  const ranges = [];
+  let start = sortedDateStrs[0];
+  let prev = sortedDateStrs[0];
+  let count = 1;
+
+  for (let i = 1; i < sortedDateStrs.length; i++) {
+    const cur = sortedDateStrs[i];
+    if (addDaysToDateStr(prev, 1) === cur) {
+      prev = cur;
+      count += 1;
+    } else {
+      ranges.push({ start, end: prev, count });
+      start = cur;
+      prev = cur;
+      count = 1;
+    }
+  }
+  ranges.push({ start, end: prev, count });
+  return ranges;
+}
+
+// 과거 7일 전 ~ 오늘 ~ 7일 후 날짜 목록 생성 (예약 현황 조회용)
 function getAdminRangeDays() {
   const list = [];
   for (let offset = -7; offset <= 7; offset++) {
@@ -60,6 +106,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
       window.location.href = '/';
     }
   };
+
   const [sessionUser, setSessionUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
 
@@ -77,25 +124,15 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
   const [quickStudentId, setQuickStudentId] = useState('');
   const [loadingMembers, setLoadingMembers] = useState(false);
 
-  const next8Days = useMemo(() => getNext8Days(), []);
   const adminRangeDays = useMemo(() => getAdminRangeDays(), []);
   const todayStr = useMemo(() => formatKSTDate(0).dateStr, []);
 
-  // 날짜별 공간 지정 및 열람실 기간 지정 상태 (약 5개월 전 ~ 7일 후)
-  const minConfigurableDate = useMemo(() => formatKSTDate(-150).dateStr, []);
-  const maxConfigurableDate = useMemo(() => formatKSTDate(7).dateStr, []);
-  const modeDatesList = useMemo(() => {
-    const list = [];
-    for (let offset = -150; offset <= 7; offset++) {
-      list.push(formatKSTDate(offset));
-    }
-    return list.reverse();
-  }, []);
-
-  const [dailyModes, setDailyModes] = useState({});
+  // 열람실(시험기간) 기간 예약 상태 (오늘 ~ 약 5개월 후(+150일))
+  const minConfigurableDate = todayStr;
+  const maxConfigurableDate = useMemo(() => formatKSTDate(150).dateStr, []);
+  const [scheduledReadingDates, setScheduledReadingDates] = useState([]);
   const [periodStartDate, setPeriodStartDate] = useState(todayStr);
   const [periodEndDate, setPeriodEndDate] = useState(formatKSTDate(2).dateStr);
-  const [showAll5MonthsModes, setShowAll5MonthsModes] = useState(false);
   const [applyingPeriod, setApplyingPeriod] = useState(false);
   const [loadingModes, setLoadingModes] = useState(false);
 
@@ -104,6 +141,11 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
   const [selectedResDate, setSelectedResDate] = useState(todayStr);
   const [hideCancelled, setHideCancelled] = useState(true);
   const [loadingRes, setLoadingRes] = useState(false);
+
+  const scheduledPeriods = useMemo(
+    () => groupConsecutiveDates(scheduledReadingDates),
+    [scheduledReadingDates]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -177,21 +219,18 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
     }
   };
 
-  const fetchDailyModes = async () => {
+  // 오늘 이후 예약된 열람실(시험기간) 날짜 목록 불러오기
+  const fetchScheduledReadingPeriods = async () => {
     setLoadingModes(true);
     try {
       const { data, error } = await supabase
         .from('daily_modes')
-        .select('date, mode')
-        .gte('date', minConfigurableDate)
-        .lte('date', maxConfigurableDate);
+        .select('date')
+        .eq('mode', 'reading_room')
+        .gte('date', todayStr)
+        .order('date', { ascending: true });
       if (error) throw error;
-
-      const map = {};
-      (data || []).forEach((row) => {
-        map[row.date] = row.mode;
-      });
-      setDailyModes(map);
+      setScheduledReadingDates((data || []).map((row) => row.date));
     } catch (err) {
       console.error(err);
     } finally {
@@ -223,7 +262,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
   useEffect(() => {
     if (!sessionUser) return;
     fetchMembers();
-    fetchDailyModes();
+    fetchScheduledReadingPeriods();
     fetchReservationsByDate(selectedResDate);
   }, [sessionUser]);
 
@@ -233,7 +272,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
     }
   }, [selectedResDate]);
 
-  // 회원 등급/자격 변경 (associate / regular / rejected / revoked)
+  // 회원 등급/자격 변경
   const handleUpdateMemberStatus = async (studentId, newStatus, confirmMsg = '') => {
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     try {
@@ -283,21 +322,8 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
     }
   };
 
-  // 날짜별 단일 변경 (study_room <-> reading_room)
-  const handleChangeDateMode = async (dateStr, newMode) => {
-    try {
-      const { error } = await supabase
-        .from('daily_modes')
-        .upsert({ date: dateStr, mode: newMode }, { onConflict: 'date' });
-      if (error) throw error;
-      setDailyModes((prev) => ({ ...prev, [dateStr]: newMode }));
-    } catch (err) {
-      alert('공간 지정 변경 실패: ' + err.message);
-    }
-  };
-
-  // 지정한 기간(시작일 ~ 종료일, 5개월 전부터 가능)을 열람실(시험기간)으로 일괄 적용하고 나머지는 기본 스터디룸으로 설정
-  const handleApplyReadingRoomPeriod = async (e) => {
+  // 열람실(시험기간) 기간 추가 예약
+  const handleAddReadingRoomPeriod = async (e) => {
     e.preventDefault();
     if (!periodStartDate || !periodEndDate) {
       alert('시작일과 종료일을 모두 선택해 주세요.');
@@ -309,39 +335,58 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
     }
     if (periodStartDate < minConfigurableDate || periodEndDate > maxConfigurableDate) {
       alert(
-        `설정은 ${minConfigurableDate} ~ ${maxConfigurableDate} (약 5개월 전 ~ 7일 후) 범위 내에서 가능합니다.`
+        `설정은 ${minConfigurableDate} ~ ${maxConfigurableDate} (오늘 ~ 약 5개월 후) 범위 내에서 가능합니다.`
       );
       return;
     }
 
     setApplyingPeriod(true);
     try {
-      const rows = modeDatesList.map((d) => {
-        const isInReadingPeriod =
-          d.dateStr >= periodStartDate && d.dateStr <= periodEndDate;
-        return {
-          date: d.dateStr,
-          mode: isInReadingPeriod ? 'reading_room' : 'study_room',
-        };
-      });
+      const dates = getDatesBetween(periodStartDate, periodEndDate);
+      const rows = dates.map((dateStr) => ({
+        date: dateStr,
+        mode: 'reading_room',
+      }));
 
       const { error } = await supabase
         .from('daily_modes')
         .upsert(rows, { onConflict: 'date' });
       if (error) throw error;
 
-      const nextMap = {};
-      rows.forEach((r) => {
-        nextMap[r.date] = r.mode;
-      });
-      setDailyModes(nextMap);
-      alert(
-        `${periodStartDate} ~ ${periodEndDate} 기간이 열람실(시험기간)로 지정되었고, 그 외 날짜는 스터디룸으로 설정되었습니다.`
-      );
+      await fetchScheduledReadingPeriods();
+      alert(`${periodStartDate} ~ ${periodEndDate} (${dates.length}일간) 열람실(시험기간) 일정이 예약되었습니다.`);
     } catch (err) {
-      alert('기간 지정 적용 실패: ' + err.message);
+      alert('열람실 기간 등록 실패: ' + err.message);
     } finally {
       setApplyingPeriod(false);
+    }
+  };
+
+  // 예약된 열람실 기간 삭제 (기본 스터디룸으로 복원)
+  const handleRemoveReadingRoomPeriod = async (period) => {
+    if (
+      !window.confirm(
+        `${period.start} ~ ${period.end} (${period.count}일간) 열람실(시험기간) 예약을 취소하고 스터디룸으로 되돌릴까요?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const dates = getDatesBetween(period.start, period.end);
+      const rows = dates.map((dateStr) => ({
+        date: dateStr,
+        mode: 'study_room',
+      }));
+
+      const { error } = await supabase
+        .from('daily_modes')
+        .upsert(rows, { onConflict: 'date' });
+      if (error) throw error;
+
+      await fetchScheduledReadingPeriods();
+    } catch (err) {
+      alert('일정 삭제 실패: ' + err.message);
     }
   };
 
@@ -778,20 +823,20 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
           </>
         )}
 
-        {/* ================= TAB 2: 날짜별 공간 지정 (기본 스터디룸 + 5개월 전 ~ 7일 후 열람실 지정) ================= */}
+        {/* ================= TAB 2: 열람실(시험기간) 기간 예약 관리 ================= */}
         {activeTab === 'modes' && (
           <>
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3">
               <div>
-                <h2 className="text-sm font-extrabold text-slate-800">
-                  열람실(시험기간) 운영 기간 일괄 지정
+                <h2 className="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
+                  <PlusCircle className="w-4 h-4 text-emerald-600" /> 열람실(시험기간) 기간 예약하기
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  기본은 <strong>스터디룸</strong>이며, 지정한 기간만 <strong>열람실(시험기간)</strong>로 바뀝니다. (약 5개월 전부터 선택 가능)
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  평소에는 기본 <strong>스터디룸</strong>으로 운영되며, 아래에서 기간을 예약해 두면 해당 기간만 자동으로 <strong>열람실(시험기간)</strong>로 전환됩니다. (앞으로 약 5개월 후까지 미리 예약 가능)
                 </p>
               </div>
 
-              <form onSubmit={handleApplyReadingRoomPeriod} className="space-y-3">
+              <form onSubmit={handleAddReadingRoomPeriod} className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -827,94 +872,67 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
                   disabled={applyingPeriod}
                   className="w-full min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition"
                 >
-                  {applyingPeriod
-                    ? '적용 중...'
-                    : '선택 기간 열람실(시험기간) 적용 (나머지 스터디룸)'}
+                  {applyingPeriod ? '예약 등록 중...' : '열람실(시험기간) 기간 예약 추가'}
                 </button>
               </form>
             </section>
 
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-sm font-extrabold text-slate-800">
-                    날짜별 개별 설정
+                    예약된 열람실(시험기간) 일정 ({scheduledPeriods.length}건)
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    미지정 날짜는 기본적으로 <strong>스터디룸</strong>으로 운영됩니다.
+                    목록에 없는 날짜는 모두 기본 <strong>스터디룸</strong>으로 운영됩니다.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowAll5MonthsModes((prev) => !prev)}
-                    className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg"
-                  >
-                    {showAll5MonthsModes ? '오늘~7일 후만 보기' : '5개월 전까지 전체 보기'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={fetchDailyModes}
-                    className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" /> 새로고침
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={fetchScheduledReadingPeriods}
+                  className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+                </button>
               </div>
 
               {loadingModes ? (
                 <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
+              ) : scheduledPeriods.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  현재 예약된 열람실(시험기간) 일정이 없습니다. (모든 날짜 스터디룸 운영 중)
+                </div>
               ) : (
-                <div className="space-y-2.5 max-h-[540px] overflow-y-auto pr-1">
-                  {(showAll5MonthsModes
-                    ? modeDatesList
-                    : modeDatesList.filter((d) => d.dateStr >= todayStr)
-                  ).map((d) => {
-                    const current =
-                      dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
-                    return (
-                      <div
-                        key={d.dateStr}
-                        className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-extrabold text-slate-900">{d.label}</span>
-                          <span className="text-xs text-slate-500">({d.dateStr})</span>
-                          {d.isToday && (
-                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full">
-                              오늘
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-1.5 sm:w-72">
-                          <button
-                            type="button"
-                            onClick={() => handleChangeDateMode(d.dateStr, 'study_room')}
-                            className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
-                              current === 'study_room'
-                                ? 'bg-sky-600 text-white border-sky-600 shadow-xs'
-                                : 'bg-white text-slate-600 border-slate-200'
-                            }`}
-                          >
-                            스터디룸
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleChangeDateMode(d.dateStr, 'reading_room')}
-                            className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
-                              current === 'reading_room'
-                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                                : 'bg-white text-slate-600 border-slate-200'
-                            }`}
-                          >
+                <div className="space-y-2.5">
+                  {scheduledPeriods.map((period) => (
+                    <div
+                      key={`${period.start}_${period.end}`}
+                      className="p-3.5 rounded-2xl border border-emerald-200 bg-emerald-50/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[11px] font-extrabold">
                             열람실(시험기간)
-                          </button>
+                          </span>
+                          <span className="text-sm font-extrabold text-slate-900">
+                            {period.start} ~ {period.end}
+                          </span>
+                          <span className="text-xs font-bold text-emerald-800">
+                            ({period.count}일간)
+                          </span>
                         </div>
                       </div>
-                    );
-                  })}
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveReadingRoomPeriod(period)}
+                        className="w-full sm:w-auto min-h-[38px] px-3.5 py-2 bg-white border border-rose-300 hover:bg-rose-50 text-rose-600 text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> 일정 삭제
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
