@@ -1,403 +1,357 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
-import { getTodayKST, isValidStudentId } from './utils';
+import { getNext8Days, isValidStudentId } from './utils';
 import {
   ShieldCheck,
-  Calendar,
   Users,
+  Calendar,
   ListChecks,
+  CheckCircle2,
+  XCircle,
   UserPlus,
-  Trash2,
-  AlertTriangle,
+  RefreshCw,
   LogOut,
-  ArrowLeft,
+  AlertCircle,
+  Search,
+  Trash2,
 } from 'lucide-react';
 
-// 관리자 허용 이메일 목록 (일반 학생 계정으로 관리자 페이지 접근 차단)
 const ADMIN_EMAILS = ['kuats.official@gmail.com'];
 
-// 'YYYY-MM-DD' 시작일 ~ 종료일 사이의 모든 날짜 배열 생성
-function getDatesInRange(startStr, endStr) {
-  if (!startStr) return [];
-  const effectiveEnd = endStr && endStr >= startStr ? endStr : startStr;
-  const dates = [];
-  const current = new Date(`${startStr}T00:00:00`);
-  const last = new Date(`${effectiveEnd}T00:00:00`);
-
-  while (current <= last) {
-    const y = current.getFullYear();
-    const m = String(current.getMonth() + 1).padStart(2, '0');
-    const d = String(current.getDate()).padStart(2, '0');
-    dates.push(`${y}-${m}-${d}`);
-    current.setDate(current.getDate() + 1);
-  }
-  return dates;
+function formatHHMM(timeStr) {
+  if (!timeStr) return '00:00';
+  return String(timeStr).slice(0, 5);
 }
 
-export default function AdminView({ onBackToStudent }) {
-  // 1. Supabase Auth 관리자 세션 상태
-  const [session, setSession] = useState(null);
+export default function AdminView({ onSwitchToStudent }) {
+  const [sessionUser, setSessionUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
 
-  // 2. 관리자 대시보드 탭 ('schedule' | 'members' | 'reservations')
-  const [activeTab, setActiveTab] = useState('schedule');
+  // 모바일 하단/상단 탭: 'members' | 'modes' | 'reservations'
+  const [activeTab, setActiveTab] = useState('members');
 
-  // 3. 기간별 모드 스케줄링 상태 (기본값은 항상 스터디룸 모드)
-  const [rangeStartDate, setRangeStartDate] = useState(getTodayKST());
-  const [rangeEndDate, setRangeEndDate] = useState(getTodayKST());
-  const [dailyModes, setDailyModes] = useState([]);
-  const [modeSaving, setModeSaving] = useState(false);
-  const [conflictModal, setConflictModal] = useState(null);
-
-  // 4. 가입 승인 및 회원 등급 관리 상태
-  const [memberProfiles, setMemberProfiles] = useState([]);
+  // 회원 관리 상태
+  const [members, setMembers] = useState([]);
+  const [memberFilter, setMemberFilter] = useState('all'); // 'all' | 'pending' | 'associate' | 'regular'
+  const [searchQuery, setSearchQuery] = useState('');
   const [quickStudentId, setQuickStudentId] = useState('');
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
-  // 5. 전체 예약 내역 조회 상태
-  const [filterDate, setFilterDate] = useState(getTodayKST());
-  const [allReservations, setAllReservations] = useState([]);
+  // 날짜별 운영 모드 상태
+  const days = useMemo(() => getNext8Days(), []);
+  const [dailyModes, setDailyModes] = useState({});
+  const [loadingModes, setLoadingModes] = useState(false);
 
-  const isAllowedAdmin = (userObj) => {
-    const userEmail = userObj?.email?.toLowerCase() || '';
-    return ADMIN_EMAILS.includes(userEmail);
-  };
+  // 전체 예약 현황 상태
+  const [reservations, setReservations] = useState([]);
+  const [selectedResDate, setSelectedResDate] = useState(days[0].dateStr);
+  const [loadingRes, setLoadingRes] = useState(false);
 
-  // 초기 세션 확인 (관리자 이메일이 아니면 자동 로그아웃)
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session && !isAllowedAdmin(session.user)) {
-        await supabase.auth.signOut();
-        setSession(null);
-        return;
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      const user = data?.session?.user || null;
+      if (user && ADMIN_EMAILS.includes(user.email)) {
+        setSessionUser(user);
       }
-      setSession(session);
+      setAuthChecking(false);
     });
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session && !isAllowedAdmin(session.user)) {
-        await supabase.auth.signOut();
-        setSession(null);
-        return;
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user || null;
+      if (user && ADMIN_EMAILS.includes(user.email)) {
+        setSessionUser(user);
+      } else {
+        setSessionUser(null);
       }
-      setSession(session);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      listener?.subscription?.unsubscribe();
+    };
   }, []);
 
-  // 로그인 후 데이터 불러오기
-  useEffect(() => {
-    if (session) {
-      fetchDailyModes();
-      fetchMemberProfiles();
-      fetchReservationsByDate(filterDate);
-    }
-  }, [session, filterDate]);
-
-  // 관리자 이메일 로그인
   const handleAdminLogin = async (e) => {
     e.preventDefault();
-    setAuthError('');
-    const trimmedEmail = email.trim().toLowerCase();
+    setLoginError('');
 
-    if (!ADMIN_EMAILS.includes(trimmedEmail)) {
-      setAuthError('관리자 권한이 없는 이메일 계정입니다.');
+    const cleanEmail = email.trim().toLowerCase();
+    if (!ADMIN_EMAILS.includes(cleanEmail)) {
+      setLoginError('등록된 학생회 관리자 계정이 아닙니다.');
       return;
     }
 
-    setAuthLoading(true);
+    setLoginLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: trimmedEmail,
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
         password,
       });
       if (error) throw error;
+      setSessionUser(data.user);
     } catch (err) {
-      setAuthError('로그인 실패: 이메일 또는 비밀번호를 확인해 주세요. (' + err.message + ')');
+      setLoginError('로그인 실패: 이메일 또는 비밀번호를 확인해 주세요.');
     } finally {
-      setAuthLoading(false);
+      setLoginLoading(false);
     }
   };
 
-  // 관리자 로그아웃
   const handleAdminLogout = async () => {
     await supabase.auth.signOut();
+    setSessionUser(null);
   };
 
-  // 날짜별 스케줄 목록 조회 (오늘 이후)
-  const fetchDailyModes = async () => {
-    const today = getTodayKST();
-    const { data } = await supabase
-      .from('daily_modes')
-      .select('*')
-      .gte('date', today)
-      .order('date', { ascending: true });
-    setDailyModes(data || []);
-  };
-
-  // 선택한 기간(시작일 ~ 종료일) 모드 변경 시도 (기존 활성 예약 충돌 검사 포함)
-  const handleRequestRangeModeChange = async (startStr, endStr, nextMode) => {
-    if (!startStr) {
-      alert('시작일을 선택해 주세요.');
-      return;
-    }
-    if (endStr && endStr < startStr) {
-      alert('종료일은 시작일보다 빠를 수 없습니다.');
-      return;
-    }
-
-    const targetDates = getDatesInRange(startStr, endStr);
-    if (targetDates.length === 0) return;
-
-    setModeSaving(true);
+  // 1. 회원 목록 불러오기
+  const fetchMembers = async () => {
+    setLoadingMembers(true);
     try {
-      const { data: existingRes, error } = await supabase
-        .from('reservations')
-        .select('id, date')
-        .in('date', targetDates)
-        .eq('status', 'active');
-
-      if (error) {
-        alert('예약 현황 조회 중 오류: ' + error.message);
-        return;
-      }
-
-      if (existingRes && existingRes.length > 0) {
-        setConflictModal({
-          dates: targetDates,
-          nextMode,
-          conflictCount: existingRes.length,
-        });
-        return;
-      }
-
-      await applyRangeModeChange(targetDates, nextMode, false);
-    } finally {
-      setModeSaving(false);
-    }
-  };
-
-  // 기간 모드 변경 최종 적용
-  const applyRangeModeChange = async (targetDates, nextMode, cancelExisting) => {
-    setModeSaving(true);
-    try {
-      if (cancelExisting) {
-        const { error: cancelErr } = await supabase
-          .from('reservations')
-          .update({ status: 'cancelled' })
-          .in('date', targetDates)
-          .eq('status', 'active');
-        if (cancelErr) throw cancelErr;
-      }
-
-      if (nextMode === 'study_room') {
-        const { error: delErr } = await supabase
-          .from('daily_modes')
-          .delete()
-          .in('date', targetDates);
-        if (delErr) throw delErr;
-      } else {
-        const rows = targetDates.map((date) => ({
-          date,
-          mode: nextMode,
-        }));
-        const { error: upsertErr } = await supabase
-          .from('daily_modes')
-          .upsert(rows, { onConflict: 'date' });
-        if (upsertErr) throw upsertErr;
-      }
-
-      setConflictModal(null);
-      await fetchDailyModes();
-      if (targetDates.includes(filterDate)) {
-        await fetchReservationsByDate(filterDate);
-      }
-
-      const periodLabel =
-        targetDates.length === 1
-          ? targetDates[0]
-          : `${targetDates[0]} ~ ${targetDates[targetDates.length - 1]} (${targetDates.length}일)`;
-
-      alert(
-        `${periodLabel} 운영 모드가 [${nextMode === 'reading_room' ? '열람실 모드' : '기본 스터디룸 모드'}]로 적용되었습니다.`
-      );
+      const { data, error } = await supabase
+        .from('member_profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setMembers(data || []);
     } catch (err) {
-      alert('모드 변경 실패: ' + err.message);
+      console.error(err);
     } finally {
-      setModeSaving(false);
+      setLoadingMembers(false);
     }
   };
 
-  // 전체 회원 신청/등급 목록 조회
-  const fetchMemberProfiles = async () => {
-    const { data } = await supabase
-      .from('member_profiles')
-      .select('*')
-      .order('created_at', { ascending: false });
-    setMemberProfiles(data || []);
+  // 2. 날짜별 모드 불러오기
+  const fetchDailyModes = async () => {
+    setLoadingModes(true);
+    try {
+      const dateList = days.map((d) => d.dateStr);
+      const { data, error } = await supabase
+        .from('daily_modes')
+        .select('date, mode')
+        .in('date', dateList);
+      if (error) throw error;
+
+      const map = {};
+      (data || []).forEach((row) => {
+        map[row.date] = row.mode;
+      });
+      setDailyModes(map);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingModes(false);
+    }
   };
 
-  // 회원 승인 및 등급 변경 ('associate' | 'regular' | 'rejected')
-  const handleUpdateMemberStatus = async (studentId, nextStatus, memberName) => {
-    const { error } = await supabase
-      .from('member_profiles')
-      .update({ status: nextStatus })
-      .eq('student_id', studentId);
-
-    if (error) {
-      alert('처리 실패: ' + error.message);
-      return;
+  // 3. 선택 날짜 예약 내역 불러오기
+  const fetchReservationsByDate = async (targetDate = selectedResDate) => {
+    setLoadingRes(true);
+    try {
+      const { data, error } = await supabase
+        .from('reservations')
+        .select('*')
+        .eq('date', targetDate)
+        .order('start_time', { ascending: true });
+      if (error) throw error;
+      setReservations(data || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingRes(false);
     }
+  };
 
-    // 기존 regular_members 테이블과도 동기화 유지
-    if (nextStatus === 'regular') {
-      await supabase
-        .from('regular_members')
-        .upsert([{ name: memberName, student_id: studentId }], {
-          onConflict: 'student_id',
-        });
-    } else {
-      await supabase
-        .from('regular_members')
-        .delete()
+  useEffect(() => {
+    if (!sessionUser) return;
+    fetchMembers();
+    fetchDailyModes();
+    fetchReservationsByDate(selectedResDate);
+  }, [sessionUser]);
+
+  useEffect(() => {
+    if (sessionUser) {
+      fetchReservationsByDate(selectedResDate);
+    }
+  }, [selectedResDate]);
+
+  // 회원 등급 변경 (승인/정회원/준회원/반려)
+  const handleUpdateMemberStatus = async (studentId, newStatus) => {
+    try {
+      const { error } = await supabase
+        .from('member_profiles')
+        .update({ status: newStatus })
         .eq('student_id', studentId);
+      if (error) throw error;
+      fetchMembers();
+    } catch (err) {
+      alert('상태 변경 오류: ' + err.message);
     }
-
-    const labelMap = {
-      associate: '승인 완료 (기본 준회원 등록)',
-      regular: '정회원 승격 완료',
-      rejected: '가입 반려 처리',
-    };
-    alert(`[${memberName} (${studentId})] 회원이 [${labelMap[nextStatus]}] 되었습니다.`);
-    fetchMemberProfiles();
   };
 
-  // 회원 신청 내역 완전 삭제
-  const handleDeleteMemberProfile = async (studentId, memberName) => {
-    if (!window.confirm(`[${memberName} (${studentId})] 회원 정보를 완전히 삭제하시겠습니까?`)) return;
-    await supabase.from('regular_members').delete().eq('student_id', studentId);
-    await supabase.from('member_profiles').delete().eq('student_id', studentId);
-    fetchMemberProfiles();
-  };
-
-  // 이미 가입 신청된 학번을 정회원으로 빠른 승격
-  const handleQuickPromoteByStudentId = async (e) => {
+  // 학번으로 빠른 정회원 승격
+  const handleQuickPromoteRegular = async (e) => {
     e.preventDefault();
-    const sid = quickStudentId.trim();
-    if (!isValidStudentId(sid)) {
-      alert('학번은 숫자 10자리로 정확히 입력해 주세요.');
+    const cleanId = quickStudentId.trim();
+    if (!isValidStudentId(cleanId)) {
+      alert('학번은 숫자 10자리로 입력해 주세요. (예: 2026170123)');
       return;
     }
 
-    const target = memberProfiles.find((m) => m.student_id === sid);
-    if (!target) {
-      alert('해당 학번으로 회원가입 신청된 내역이 없습니다. 먼저 학생이 회원가입 신청을 해야 합니다.');
-      return;
-    }
+    try {
+      const { data: target } = await supabase
+        .from('member_profiles')
+        .select('student_id, name')
+        .eq('student_id', cleanId)
+        .maybeSingle();
 
-    await handleUpdateMemberStatus(target.student_id, 'regular', target.name);
-    setQuickStudentId('');
+      if (!target) {
+        alert('먼저 회원가입 신청을 완료한 학번만 승격할 수 있습니다.');
+        return;
+      }
+
+      const { error } = await supabase
+        .from('member_profiles')
+        .update({ status: 'regular' })
+        .eq('student_id', cleanId);
+      if (error) throw error;
+
+      alert(`${target.name} (${cleanId}) 회원이 정회원으로 승격되었습니다.`);
+      setQuickStudentId('');
+      fetchMembers();
+    } catch (err) {
+      alert('승격 처리 오류: ' + err.message);
+    }
   };
 
-// 특정 날짜 전체 예약 상세 조회 (오늘 이전 날짜의 지난 예약은 DB에서 자동 삭제)
-  const fetchReservationsByDate = async (dateStr) => {
-    const today = getTodayKST();
+  // 날짜별 모드 변경 (study_room <-> reading_room)
+  const handleChangeDateMode = async (dateStr, newMode) => {
+    try {
+      const { error } = await supabase
+        .from('daily_modes')
+        .upsert({ date: dateStr, mode: newMode }, { onConflict: 'date' });
+      if (error) throw error;
+      setDailyModes((prev) => ({ ...prev, [dateStr]: newMode }));
+    } catch (err) {
+      alert('운영 모드 변경 실패: ' + err.message);
+    }
+  };
 
-    // 1. 오늘 날짜가 지난 과거 예약 데이터는 DB에서 자동 영구 삭제
-    await supabase
-      .from('reservations')
-      .delete()
-      .lt('date', today);
-
-    // 2. 조회 선택한 날짜가 이미 지난 날이면 빈 목록 반환
-    if (dateStr < today) {
-      setAllReservations([]);
+  // 관리자 직권 예약 취소
+  const handleAdminCancelReservation = async (res) => {
+    if (
+      !window.confirm(
+        `[${res.student_name} / ${res.seat_id} / ${formatHHMM(res.start_time)}~${formatHHMM(
+          res.end_time
+        )}] 예약을 관리자 권한으로 취소할까요?`
+      )
+    ) {
       return;
     }
 
-    // 3. 오늘 및 이후 날짜의 예약만 조회
-    const { data } = await supabase
-      .from('reservations')
-      .select('*')
-      .eq('date', dateStr)
-      .order('start_time', { ascending: true });
-    setAllReservations(data || []);
-  };
-  // 관리자 직권 강제 취소
-  const handleForceCancel = async (id) => {
-    if (!window.confirm('관리자 권한으로 이 예약을 강제 취소하시겠습니까?')) return;
-    const { error } = await supabase
-      .from('reservations')
-      .update({ status: 'cancelled' })
-      .eq('id', id);
-
-    if (error) {
-      alert('취소 실패: ' + error.message);
-      return;
+    try {
+      const { error } = await supabase
+        .from('reservations')
+        .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
+        .eq('id', res.id);
+      if (error) throw error;
+      fetchReservationsByDate(selectedResDate);
+    } catch (err) {
+      alert('예약 취소 실패: ' + err.message);
     }
-    fetchReservationsByDate(filterDate);
   };
 
-  // [화면 1] 관리자 로그인 화면
-  if (!session) {
+  const filteredMembers = useMemo(() => {
+    return members.filter((m) => {
+      if (memberFilter !== 'all' && m.status !== memberFilter) return false;
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.trim().toLowerCase();
+      return (
+        m.name?.toLowerCase().includes(q) ||
+        m.student_id?.includes(q) ||
+        m.department?.toLowerCase().includes(q)
+      );
+    });
+  }, [members, memberFilter, searchQuery]);
+
+  const pendingCount = useMemo(
+    () => members.filter((m) => m.status === 'pending').length,
+    [members]
+  );
+
+  if (authChecking) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-2xl">
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm">
+        관리자 인증 확인 중...
+      </div>
+    );
+  }
+
+  // [화면 1] 관리자 로그인 화면 (모바일 최적화)
+  if (!sessionUser) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center px-4 py-6">
+        <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-6 sm:p-8">
           <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-2 text-slate-900">
+            <div className="flex items-center gap-2">
               <ShieldCheck className="w-6 h-6 text-rose-600" />
-              <h1 className="text-xl font-extrabold">학생회 관리자 로그인</h1>
+              <h1 className="text-lg sm:text-xl font-extrabold text-slate-900">
+                학생회 관리자 로그인
+              </h1>
             </div>
             <button
-              onClick={onBackToStudent}
-              className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1"
+              type="button"
+              onClick={onSwitchToStudent}
+              className="min-h-[36px] px-2.5 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 rounded-xl"
             >
-              <ArrowLeft className="w-3.5 h-3.5" /> 학생 화면
+              ← 학생 화면
             </button>
           </div>
 
           <form onSubmit={handleAdminLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">관리자 이메일</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">관리자 이메일</label>
               <input
                 type="email"
                 required
-                placeholder="imkorea.univ@gmail.com"
+                autoComplete="email"
+                placeholder="관리자 이메일을 입력하세요"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 focus:outline-none"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">비밀번호</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">비밀번호</label>
               <input
                 type="password"
                 required
-                placeholder="••••••••"
+                autoComplete="current-password"
+                placeholder="비밀번호 입력"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm"
+                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 focus:outline-none"
               />
             </div>
 
-            {authError && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600">
-                {authError}
+            {loginError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{loginError}</span>
               </div>
             )}
 
             <button
               type="submit"
-              disabled={authLoading}
-              className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition"
+              disabled={loginLoading}
+              className="w-full min-h-[48px] py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition"
             >
-              {authLoading ? '인증 중...' : '관리자 대시보드 입장'}
+              {loginLoading ? '로그인 중...' : '관리자 대시보드 입장'}
             </button>
           </form>
         </div>
@@ -405,468 +359,457 @@ export default function AdminView({ onBackToStudent }) {
     );
   }
 
-  const readingRoomList = dailyModes.filter((d) => d.mode === 'reading_room');
-  const pendingMembers = memberProfiles.filter((m) => m.status === 'pending');
-  const approvedMembers = memberProfiles.filter(
-    (m) => m.status === 'associate' || m.status === 'regular'
-  );
-
-  // [화면 2] 관리자 대시보드
+  // [화면 2] 관리자 대시보드 (모바일 카드형 UI)
   return (
     <div className="min-h-screen bg-slate-100 pb-16">
-      <header className="bg-slate-900 text-white sticky top-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 py-3.5 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-emerald-400" />
-            <h1 className="font-extrabold text-base">학생회 공간 예약 관리자 콘솔</h1>
+      {/* 상단 고정 헤더 */}
+      <header className="bg-slate-900 text-white sticky top-0 z-30 shadow-sm">
+        <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <ShieldCheck className="w-5 h-5 text-rose-400 shrink-0" />
+            <h1 className="text-base sm:text-lg font-extrabold truncate">편입연 관리자 콘솔</h1>
           </div>
-          <div className="flex items-center gap-3 text-xs">
-            <span className="text-slate-300">{session.user.email}</span>
+
+          <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={onBackToStudent}
-              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg"
+              onClick={onSwitchToStudent}
+              className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl"
             >
-              학생 예약 페이지 보기
+              학생 화면
             </button>
             <button
               onClick={handleAdminLogout}
-              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 rounded-lg flex items-center gap-1"
+              className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl flex items-center gap-1"
             >
               <LogOut className="w-3.5 h-3.5" /> 로그아웃
             </button>
           </div>
         </div>
+
+        {/* 모바일 친화적 3단 네비게이션 탭 */}
+        <div className="bg-slate-800/90 border-t border-slate-700">
+          <div className="max-w-5xl mx-auto px-3.5 sm:px-4 grid grid-cols-3 gap-1 py-1.5">
+            <button
+              type="button"
+              onClick={() => setActiveTab('members')}
+              className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                activeTab === 'members'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>회원 관리</span>
+              {pendingCount > 0 && (
+                <span className="px-1.5 py-0.2 bg-rose-500 text-white text-[10px] rounded-full">
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('modes')}
+              className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                activeTab === 'modes'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <Calendar className="w-4 h-4" />
+              <span>운영 모드</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('reservations')}
+              className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                activeTab === 'reservations'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <ListChecks className="w-4 h-4" />
+              <span>예약 현황</span>
+            </button>
+          </div>
+        </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 mt-6 space-y-6">
-        {/* 탭 메뉴 */}
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setActiveTab('schedule')}
-            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition ${
-              activeTab === 'schedule'
-                ? 'bg-slate-900 text-white shadow'
-                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <Calendar className="w-4 h-4" /> 1. 날짜별 모드 스케줄러
-          </button>
-          <button
-            onClick={() => setActiveTab('members')}
-            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition ${
-              activeTab === 'members'
-                ? 'bg-slate-900 text-white shadow'
-                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <Users className="w-4 h-4" /> 2. 가입 승인 및 등급 관리 (대기 {pendingMembers.length} · 승인 {approvedMembers.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('reservations')}
-            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition ${
-              activeTab === 'reservations'
-                ? 'bg-slate-900 text-white shadow'
-                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <ListChecks className="w-4 h-4" /> 3. 전체 예약 현황 조회
-          </button>
-        </div>
-
-        {/* [탭 1] 기간별 모드 스케줄러 */}
-        {activeTab === 'schedule' && (
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">열람실 모드 기간 지정</h2>
-              <p className="text-xs text-slate-500 mt-1">
-                열람실 모드로 지정되지 않은 모든 날짜는 기본으로 <strong>스터디룸 모드(12:00~22:00)</strong>로
-                운영됩니다. <strong>열람실 모드(24시간, 12좌석)</strong>로 운영할 시작일과 종료일을 선택하세요.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-end gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">시작일</label>
-                <input
-                  type="date"
-                  min={getTodayKST()}
-                  value={rangeStartDate}
-                  onChange={(e) => {
-                    const nextStart = e.target.value;
-                    setRangeStartDate(nextStart);
-                    if (rangeEndDate && rangeEndDate < nextStart) {
-                      setRangeEndDate(nextStart);
-                    }
-                  }}
-                  className="px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">종료일</label>
-                <input
-                  type="date"
-                  min={rangeStartDate || getTodayKST()}
-                  value={rangeEndDate}
-                  onChange={(e) => setRangeEndDate(e.target.value)}
-                  className="px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white"
-                />
-              </div>
-
-              <button
-                type="button"
-                disabled={modeSaving}
-                onClick={() =>
-                  handleRequestRangeModeChange(rangeStartDate, rangeEndDate, 'reading_room')
-                }
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
-              >
-                {modeSaving ? '적용 중...' : '선택 기간을 [열람실 모드]로 설정'}
-              </button>
-
-              <button
-                type="button"
-                disabled={modeSaving}
-                onClick={() =>
-                  handleRequestRangeModeChange(rangeStartDate, rangeEndDate, 'study_room')
-                }
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
-              >
-                {modeSaving ? '적용 중...' : '선택 기간을 [스터디룸 모드]로 복귀'}
-              </button>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-bold text-slate-800 mb-2">
-                현재 [열람실 모드]로 지정된 날짜 목록
-              </h3>
-              {readingRoomList.length === 0 ? (
-                <p className="text-xs text-slate-400 py-4">
-                  열람실 모드로 지정된 날짜가 없습니다. (모든 날짜가 기본 스터디룸 모드로 운영 중)
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {readingRoomList.map((item) => (
-                    <div
-                      key={item.date}
-                      className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50 flex items-center justify-between"
-                    >
-                      <div>
-                        <div className="text-sm font-extrabold text-emerald-950">{item.date}</div>
-                        <div className="text-xs text-emerald-700">열람실 모드 (24시간 · 12석)</div>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={modeSaving}
-                        onClick={() =>
-                          handleRequestRangeModeChange(item.date, item.date, 'study_room')
-                        }
-                        className="px-2.5 py-1 bg-white border border-emerald-300 text-xs font-bold text-emerald-800 rounded-lg hover:bg-emerald-100"
-                      >
-                        해제
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
-        {/* [탭 2] 가입 승인 및 회원 등급 관리 */}
+      <main className="max-w-5xl mx-auto px-3.5 sm:px-4 mt-4 sm:mt-6 space-y-4">
+        {/* ================= TAB 1: 회원 승인 및 등급 관리 ================= */}
         {activeTab === 'members' && (
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">가입 승인 및 회원 등급 관리</h2>
-              <p className="text-xs text-slate-500 mt-1">
-                신청자의 <strong>이름 · 학번 · 학과/학부</strong>를 확인하고 승인하면 기본{' '}
-                <strong>준회원</strong>으로 등록되며, 필요 시 <strong>정회원</strong>으로 승격할 수 있습니다.
-              </p>
-            </div>
-
-            {/* 1. 가입 승인 대기 목록 */}
-            <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 space-y-3">
-              <h3 className="text-sm font-extrabold text-amber-900">
-                가입 승인 대기 ({pendingMembers.length}명)
-              </h3>
-              {pendingMembers.length === 0 ? (
-                <p className="text-xs text-amber-700/80">현재 승인 대기 중인 회원가입 신청이 없습니다.</p>
-              ) : (
-                <div className="space-y-2">
-                  {pendingMembers.map((m) => (
-                    <div
-                      key={m.student_id}
-                      className="p-3.5 bg-white rounded-xl border border-amber-200 flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="font-extrabold text-slate-900 text-sm">{m.name}</span>
-                        <span className="font-mono text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
-                          {m.student_id}
-                        </span>
-                        <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
-                          {m.department}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateMemberStatus(m.student_id, 'associate', m.name)}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg"
-                        >
-                          승인 (준회원 등록)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateMemberStatus(m.student_id, 'rejected', m.name)}
-                          className="px-3 py-1.5 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-lg"
-                        >
-                          반려
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMemberProfile(m.student_id, m.name)}
-                          className="px-2 py-1.5 text-slate-400 hover:text-rose-600 text-xs"
-                          title="신청 내역 삭제"
-                        >
-                          삭제
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 학번 입력으로 정회원 빠른 승격 */}
-            <form
-              onSubmit={handleQuickPromoteByStudentId}
-              className="flex flex-wrap items-end gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200"
-            >
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  학번으로 바로 정회원 승격 (숫자 10자리)
-                </label>
+          <>
+            {/* 빠른 정회원 승격 카드 */}
+            <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+              <h2 className="text-sm font-extrabold text-slate-800 mb-2 flex items-center gap-1.5">
+                <UserPlus className="w-4 h-4 text-indigo-600" /> 학번으로 빠른 정회원 승격
+              </h2>
+              <form onSubmit={handleQuickPromoteRegular} className="flex gap-2">
                 <input
                   type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   maxLength={10}
                   placeholder="2026170123"
                   value={quickStudentId}
                   onChange={(e) => setQuickStudentId(e.target.value.replace(/[^0-9]/g, ''))}
-                  className="px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white"
+                  className="flex-1 min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-300 rounded-xl tracking-wider"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shrink-0"
+                >
+                  정회원 승격
+                </button>
+              </form>
+            </section>
+
+            {/* 필터 + 검색 + 회원 카드 리스트 */}
+            <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-extrabold text-slate-800">
+                  회원 목록 ({filteredMembers.length}명)
+                </h2>
+                <button
+                  onClick={fetchMembers}
+                  className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+                </button>
+              </div>
+
+              {/* 상태 필터 칩 */}
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
+                {[
+                  { key: 'all', label: `전체 (${members.length})` },
+                  { key: 'pending', label: `승인대기 (${pendingCount})` },
+                  {
+                    key: 'associate',
+                    label: `준회원 (${members.filter((m) => m.status === 'associate').length})`,
+                  },
+                  {
+                    key: 'regular',
+                    label: `정회원 (${members.filter((m) => m.status === 'regular').length})`,
+                  },
+                ].map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => setMemberFilter(f.key)}
+                    className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 border transition ${
+                      memberFilter === f.key
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* 이름/학번/학과 검색 */}
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="이름, 학번, 학과로 검색"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full min-h-[42px] pl-9 pr-3.5 py-2 text-base sm:text-sm border border-slate-300 rounded-xl"
                 />
               </div>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-1.5"
-              >
-                <UserPlus className="w-4 h-4" /> 정회원으로 승격
-              </button>
-            </form>
 
-            {/* 2. 승인된 전체 회원 목록 (준회원 / 정회원) */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs text-slate-500 bg-slate-50">
-                    <th className="py-2.5 px-3">이름</th>
-                    <th className="py-2.5 px-3">학번</th>
-                    <th className="py-2.5 px-3">학과 / 학부</th>
-                    <th className="py-2.5 px-3">현재 등급</th>
-                    <th className="py-2.5 px-3 text-right">등급 관리</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {approvedMembers.map((m) => (
-                    <tr key={m.student_id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="py-2.5 px-3 font-bold text-slate-800">{m.name}</td>
-                      <td className="py-2.5 px-3 text-slate-600 font-mono">{m.student_id}</td>
-                      <td className="py-2.5 px-3 text-xs font-semibold text-slate-700">
-                        {m.department}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        {m.status === 'regular' ? (
-                          <span className="px-2.5 py-0.5 bg-indigo-100 text-indigo-800 text-xs font-bold rounded-full">
-                            정회원
-                          </span>
-                        ) : (
-                          <span className="px-2.5 py-0.5 bg-amber-100 text-amber-800 text-xs font-bold rounded-full">
-                            준회원
-                          </span>
+              {/* 모바일 카드 리스트 */}
+              {loadingMembers ? (
+                <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
+              ) : filteredMembers.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  조건에 맞는 회원이 없습니다.
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {filteredMembers.map((m) => (
+                    <div
+                      key={m.student_id}
+                      className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-extrabold text-slate-900">{m.name}</span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              {m.student_id}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-600 mt-0.5">{m.department}</p>
+                        </div>
+
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold ${
+                            m.status === 'pending'
+                              ? 'bg-amber-100 text-amber-800'
+                              : m.status === 'regular'
+                              ? 'bg-indigo-100 text-indigo-800'
+                              : m.status === 'associate'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {m.status === 'pending'
+                            ? '승인 대기'
+                            : m.status === 'regular'
+                            ? '정회원'
+                            : m.status === 'associate'
+                            ? '준회원'
+                            : '반려됨'}
+                        </span>
+                      </div>
+
+                      {/* 엄지손가락으로 누르기 쉬운 액션 버튼 줄 */}
+                      <div className="grid grid-cols-2 sm:flex sm:justify-end gap-2 pt-1">
+                        {m.status === 'pending' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
+                              className="min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" /> 준회원 승인
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateMemberStatus(m.student_id, 'rejected')}
+                              className="min-h-[40px] px-3 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                            >
+                              <XCircle className="w-3.5 h-3.5" /> 반려
+                            </button>
+                          </>
                         )}
-                      </td>
-                      <td className="py-2.5 px-3 text-right space-x-2">
-                        {m.status === 'associate' ? (
+
+                        {m.status === 'associate' && (
                           <button
                             type="button"
-                            onClick={() => handleUpdateMemberStatus(m.student_id, 'regular', m.name)}
-                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg"
+                            onClick={() => handleUpdateMemberStatus(m.student_id, 'regular')}
+                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl"
                           >
                             정회원으로 승격
                           </button>
-                        ) : (
+                        )}
+
+                        {m.status === 'regular' && (
                           <button
                             type="button"
-                            onClick={() => handleUpdateMemberStatus(m.student_id, 'associate', m.name)}
-                            className="px-3 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-lg"
+                            onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
+                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl"
                           >
                             준회원으로 변경
                           </button>
                         )}
+
+                        {m.status === 'rejected' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
+                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl"
+                          >
+                            준회원으로 재승인
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* ================= TAB 2: 날짜별 운영 모드 설정 ================= */}
+        {activeTab === 'modes' && (
+          <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-800">
+                  날짜별 공간 운영 모드 (오늘~7일 후)
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  미지정 날짜는 기본적으로 <strong>스터디룸 모드</strong>로 운영됩니다.
+                </p>
+              </div>
+              <button
+                onClick={fetchDailyModes}
+                className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+              </button>
+            </div>
+
+            {loadingModes ? (
+              <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
+            ) : (
+              <div className="space-y-2.5">
+                {days.map((d) => {
+                  const current =
+                    dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
+                  return (
+                    <div
+                      key={d.dateStr}
+                      className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-extrabold text-slate-900">{d.label}</span>
+                        <span className="text-xs text-slate-500">({d.dateStr})</span>
+                        {d.isToday && (
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full">
+                            오늘
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5 sm:w-64">
                         <button
                           type="button"
-                          onClick={() => handleUpdateMemberStatus(m.student_id, 'rejected', m.name)}
-                          className="text-rose-500 hover:text-rose-700 p-1 align-middle"
-                          title="승인 취소(반려)"
+                          onClick={() => handleChangeDateMode(d.dateStr, 'study_room')}
+                          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
+                            current === 'study_room'
+                              ? 'bg-sky-600 text-white border-sky-600 shadow-xs'
+                              : 'bg-white text-slate-600 border-slate-200'
+                          }`}
                         >
-                          <Trash2 className="w-4 h-4 inline" />
+                          스터디룸 모드
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {approvedMembers.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="py-6 text-center text-xs text-slate-400">
-                        승인된 회원이 없습니다.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeDateMode(d.dateStr, 'reading_room')}
+                          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
+                            current === 'reading_room'
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                              : 'bg-white text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          열람실 모드
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         )}
 
-        {/* [탭 3] 전체 예약 현황 상세 조회 */}
+        {/* ================= TAB 3: 전체 예약 현황 및 직권 취소 ================= */}
         {activeTab === 'reservations' && (
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-extrabold text-slate-900">날짜별 예약 현황 및 상세 내역</h2>
-                <p className="text-xs text-slate-500">
-                  관리자 화면에서는 예약자의 실명, 학번, 동반자 학번, 인원수, 사용 목적을 모두 확인할 수 있습니다.
-                </p>
-              </div>
-              <input
-                type="date"
-                value={filterDate}
-                onChange={(e) => setFilterDate(e.target.value)}
-                className="px-3 py-2 text-sm border border-slate-300 rounded-xl"
-              />
+          <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-extrabold text-slate-800">
+                날짜별 예약 내역 ({reservations.length}건)
+              </h2>
+              <button
+                onClick={() => fetchReservationsByDate(selectedResDate)}
+                className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+              </button>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                    <th className="py-2.5 px-3">구분/좌석</th>
-                    <th className="py-2.5 px-3">이용 시간</th>
-                    <th className="py-2.5 px-3">예약자 (학번)</th>
-                    <th className="py-2.5 px-3">동반자 / 인원 / 목적</th>
-                    <th className="py-2.5 px-3">상태</th>
-                    <th className="py-2.5 px-3 text-right">관리</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allReservations.map((r) => (
-                    <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="py-3 px-3 font-bold">
-                        {r.mode === 'reading_room' ? `열람실 ${r.seat_id}` : '스터디룸 전체'}
-                      </td>
-                      <td className="py-3 px-3 font-semibold text-slate-800">
-                        {r.start_time} ~ {r.end_time}
-                      </td>
-                      <td className="py-3 px-3">
-                        <div className="font-bold text-slate-900">{r.student_name}</div>
-                        <div className="text-slate-500 font-mono">{r.student_id}</div>
-                      </td>
-                      <td className="py-3 px-3 text-slate-600">
-                        {r.mode === 'study_room' ? (
-                          <div>
-                            <div>총 {r.total_headcount}명 · 목적: {r.purpose}</div>
-                            <div className="text-[11px] text-slate-400">
-                              동반 학번: {(r.companion_ids || []).join(', ')}
-                            </div>
-                          </div>
-                        ) : (
-                          <span>개인 열람실 이용</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3">
-                        <span
-                          className={`px-2 py-0.5 rounded-full font-bold ${
-                            r.status === 'active'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-200 text-slate-600'
-                          }`}
-                        >
-                          {r.status === 'active' ? '예약중' : '취소/종료'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        {r.status === 'active' && (
-                          <button
-                            onClick={() => handleForceCancel(r.id)}
-                            className="px-2.5 py-1 bg-rose-500 hover:bg-rose-600 text-white rounded-lg font-bold"
-                          >
-                            강제 취소
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {allReservations.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400">
-                        해당 날짜에 등록된 예약 내역이 없습니다.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            {/* 날짜 가로 스크롤 선택 */}
+            <div className="flex gap-2 overflow-x-auto pb-1 snap-x">
+              {days.map((d) => {
+                const active = d.dateStr === selectedResDate;
+                return (
+                  <button
+                    key={d.dateStr}
+                    type="button"
+                    onClick={() => setSelectedResDate(d.dateStr)}
+                    className={`snap-start min-w-[74px] min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-bold border shrink-0 transition ${
+                      active
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
             </div>
+
+            {loadingRes ? (
+              <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
+            ) : reservations.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-400">
+                해당 날짜에 예약 내역이 없습니다.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {reservations.map((res) => (
+                  <div
+                    key={res.id}
+                    className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-slate-800 text-white text-xs font-bold">
+                          {res.mode === 'reading_room' ? `열람실 ${res.seat_id}` : '스터디룸'}
+                        </span>
+                        <span className="text-sm font-extrabold text-slate-900">
+                          {formatHHMM(res.start_time)} ~ {formatHHMM(res.end_time)}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                          res.status === 'active'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : res.status === 'completed'
+                            ? 'bg-slate-200 text-slate-700'
+                            : 'bg-rose-100 text-rose-700'
+                        }`}
+                      >
+                        {res.status === 'active'
+                          ? '예약중'
+                          : res.status === 'completed'
+                          ? '퇴실완료'
+                          : '취소됨'}
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-slate-700">
+                      <strong>대표자:</strong> {res.student_name} ({res.student_id})
+                    </div>
+
+                    {res.mode === 'study_room' && (
+                      <div className="text-xs text-slate-600 space-y-0.5">
+                        <div>
+                          <strong>인원/목적:</strong> {res.total_headcount}명 · {res.purpose}
+                        </div>
+                        {Array.isArray(res.companion_ids) && res.companion_ids.length > 0 && (
+                          <div>
+                            <strong>동반자 학번:</strong> {res.companion_ids.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {res.status === 'active' && (
+                      <div className="pt-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleAdminCancelReservation(res)}
+                          className="w-full sm:w-auto min-h-[40px] px-3.5 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> 관리자 직권 취소
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         )}
       </main>
-
-      {/* 충돌 경고 모달 */}
-      {conflictModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl">
-            <div className="flex items-center gap-2 text-amber-600 mb-2">
-              <AlertTriangle className="w-6 h-6" />
-              <h3 className="text-base font-extrabold">기존 예약 충돌 경고</h3>
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed mb-4">
-              선택하신 기간(
-              <strong>
-                {conflictModal.dates[0]}
-                {conflictModal.dates.length > 1
-                  ? ` ~ ${conflictModal.dates[conflictModal.dates.length - 1]}`
-                  : ''}
-              </strong>
-              )에 이미 <strong className="text-rose-600">{conflictModal.conflictCount}건의 활성 예약</strong>이
-              존재합니다. 운영 모드를 변경하면 기존 예약과 충돌이 발생합니다. 기존 예약을 일괄 취소하고 모드를
-              변경하시겠습니까?
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConflictModal(null)}
-                className="px-4 py-2 text-xs font-bold bg-slate-100 text-slate-700 rounded-xl"
-              >
-                변경 취소
-              </button>
-              <button
-                onClick={() =>
-                  applyRangeModeChange(conflictModal.dates, conflictModal.nextMode, true)
-                }
-                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl"
-              >
-                기존 예약 일괄 취소 후 모드 변경
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
