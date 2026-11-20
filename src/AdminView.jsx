@@ -81,12 +81,21 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
   const adminRangeDays = useMemo(() => getAdminRangeDays(), []);
   const todayStr = useMemo(() => formatKSTDate(0).dateStr, []);
 
-  // 날짜별 공간 지정 및 열람실 기간 지정 상태
+  // 날짜별 공간 지정 및 열람실 기간 지정 상태 (약 5개월 전 ~ 7일 후)
+  const minConfigurableDate = useMemo(() => formatKSTDate(-150).dateStr, []);
+  const maxConfigurableDate = useMemo(() => formatKSTDate(7).dateStr, []);
+  const modeDatesList = useMemo(() => {
+    const list = [];
+    for (let offset = -150; offset <= 7; offset++) {
+      list.push(formatKSTDate(offset));
+    }
+    return list.reverse();
+  }, []);
+
   const [dailyModes, setDailyModes] = useState({});
-  const [periodStartDate, setPeriodStartDate] = useState(next8Days[0]?.dateStr || todayStr);
-  const [periodEndDate, setPeriodEndDate] = useState(
-    next8Days[2]?.dateStr || next8Days[0]?.dateStr || todayStr
-  );
+  const [periodStartDate, setPeriodStartDate] = useState(todayStr);
+  const [periodEndDate, setPeriodEndDate] = useState(formatKSTDate(2).dateStr);
+  const [showAll5MonthsModes, setShowAll5MonthsModes] = useState(false);
   const [applyingPeriod, setApplyingPeriod] = useState(false);
   const [loadingModes, setLoadingModes] = useState(false);
 
@@ -171,11 +180,11 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
   const fetchDailyModes = async () => {
     setLoadingModes(true);
     try {
-      const dateList = next8Days.map((d) => d.dateStr);
       const { data, error } = await supabase
         .from('daily_modes')
         .select('date, mode')
-        .in('date', dateList);
+        .gte('date', minConfigurableDate)
+        .lte('date', maxConfigurableDate);
       if (error) throw error;
 
       const map = {};
@@ -287,7 +296,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
     }
   };
 
-  // 지정한 기간(시작일 ~ 종료일)을 열람실(시험기간)으로 일괄 적용하고 나머지는 기본 스터디룸으로 설정
+  // 지정한 기간(시작일 ~ 종료일, 5개월 전부터 가능)을 열람실(시험기간)으로 일괄 적용하고 나머지는 기본 스터디룸으로 설정
   const handleApplyReadingRoomPeriod = async (e) => {
     e.preventDefault();
     if (!periodStartDate || !periodEndDate) {
@@ -298,10 +307,16 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
       alert('시작일이 종료일보다 늦을 수 없습니다.');
       return;
     }
+    if (periodStartDate < minConfigurableDate || periodEndDate > maxConfigurableDate) {
+      alert(
+        `설정은 ${minConfigurableDate} ~ ${maxConfigurableDate} (약 5개월 전 ~ 7일 후) 범위 내에서 가능합니다.`
+      );
+      return;
+    }
 
     setApplyingPeriod(true);
     try {
-      const rows = next8Days.map((d) => {
+      const rows = modeDatesList.map((d) => {
         const isInReadingPeriod =
           d.dateStr >= periodStartDate && d.dateStr <= periodEndDate;
         return {
@@ -763,7 +778,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
           </>
         )}
 
-        {/* ================= TAB 2: 날짜별 공간 지정 (기본 스터디룸 + 지정 기간 열람실) ================= */}
+        {/* ================= TAB 2: 날짜별 공간 지정 (기본 스터디룸 + 5개월 전 ~ 7일 후 열람실 지정) ================= */}
         {activeTab === 'modes' && (
           <>
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3">
@@ -772,7 +787,7 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
                   열람실(시험기간) 운영 기간 일괄 지정
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  기본은 <strong>스터디룸</strong>이며, 지정한 기간만 <strong>열람실(시험기간)</strong>로 바뀝니다.
+                  기본은 <strong>스터디룸</strong>이며, 지정한 기간만 <strong>열람실(시험기간)</strong>로 바뀝니다. (약 5개월 전부터 선택 가능)
                 </p>
               </div>
 
@@ -782,34 +797,28 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       열람실 시작일
                     </label>
-                    <select
+                    <input
+                      type="date"
+                      min={minConfigurableDate}
+                      max={maxConfigurableDate}
                       value={periodStartDate}
                       onChange={(e) => setPeriodStartDate(e.target.value)}
                       className="w-full min-h-[44px] px-3 py-2 text-sm font-bold border border-slate-300 rounded-xl bg-white"
-                    >
-                      {next8Days.map((d) => (
-                        <option key={d.dateStr} value={d.dateStr}>
-                          {d.label} ({d.dateStr})
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       열람실 종료일
                     </label>
-                    <select
+                    <input
+                      type="date"
+                      min={minConfigurableDate}
+                      max={maxConfigurableDate}
                       value={periodEndDate}
                       onChange={(e) => setPeriodEndDate(e.target.value)}
                       className="w-full min-h-[44px] px-3 py-2 text-sm font-bold border border-slate-300 rounded-xl bg-white"
-                    >
-                      {next8Days.map((d) => (
-                        <option key={d.dateStr} value={d.dateStr}>
-                          {d.label} ({d.dateStr})
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
                 </div>
 
@@ -826,28 +835,42 @@ export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
             </section>
 
             <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="text-sm font-extrabold text-slate-800">
-                    날짜별 개별 설정 (오늘~7일 후)
+                    날짜별 개별 설정
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     미지정 날짜는 기본적으로 <strong>스터디룸</strong>으로 운영됩니다.
                   </p>
                 </div>
-                <button
-                  onClick={fetchDailyModes}
-                  className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> 새로고침
-                </button>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAll5MonthsModes((prev) => !prev)}
+                    className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg"
+                  >
+                    {showAll5MonthsModes ? '오늘~7일 후만 보기' : '5개월 전까지 전체 보기'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={fetchDailyModes}
+                    className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+                  </button>
+                </div>
               </div>
 
               {loadingModes ? (
                 <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
               ) : (
-                <div className="space-y-2.5">
-                  {next8Days.map((d) => {
+                <div className="space-y-2.5 max-h-[540px] overflow-y-auto pr-1">
+                  {(showAll5MonthsModes
+                    ? modeDatesList
+                    : modeDatesList.filter((d) => d.dateStr >= todayStr)
+                  ).map((d) => {
                     const current =
                       dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
                     return (

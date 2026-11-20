@@ -120,6 +120,9 @@ export default function StudentView({ onSwitchToAdmin }) {
   const [loginMessage, setLoginMessage] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
+  // 메인 메뉴 탭: 'book' (공간 예약 하기) | 'my_reservations' (내 예약)
+  const [activeMenu, setActiveMenu] = useState('book');
+
   const days = useMemo(() => getNext8Days(), []);
   const [selectedDate, setSelectedDate] = useState(days[0].dateStr);
   const [currentMode, setCurrentMode] = useState('study_room'); // 기본값은 스터디룸
@@ -265,6 +268,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
   const handleLogout = () => {
     setStudentInfo(null);
+    setActiveMenu('book');
     setLoginError('');
     setLoginMessage('');
   };
@@ -720,6 +724,7 @@ export default function StudentView({ onSwitchToAdmin }) {
 
       alert('예약이 완료되었습니다! 취소 또는 퇴실 시 방금 입력한 4자리 비밀번호가 필요합니다.');
       setShowBookingModal(false);
+      setActiveMenu('my_reservations');
       fetchScheduleAndReservations();
     } catch (err) {
       setBookingError('예약 저장 실패: ' + err.message);
@@ -1075,7 +1080,7 @@ export default function StudentView({ onSwitchToAdmin }) {
     );
   }
 
-// [화면 1-2] 승인 대기 / 반려 / 자격 박탈 안내 화면
+  // [화면 1-2] 승인 대기 / 반려 / 자격 박탈 안내 화면
   if (studentInfo.status !== 'associate' && studentInfo.status !== 'regular') {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
@@ -1111,9 +1116,10 @@ export default function StudentView({ onSwitchToAdmin }) {
       </div>
     );
   }
+
   return (
-    <div className="min-h-screen bg-slate-50 pb-28">
-      {/* 상단 헤더 */}
+    <div className="min-h-screen bg-slate-50 pb-12">
+      {/* 상단 헤더 + [공간 예약 하기 / 내 예약] 2단 메뉴 */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-2.5 flex items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1143,346 +1149,417 @@ export default function StudentView({ onSwitchToAdmin }) {
             로그아웃
           </button>
         </div>
+
+        {/* 공간 예약 하기 / 내 예약 전환 탭 */}
+        <div className="bg-slate-50 border-t border-slate-200">
+          <div className="max-w-5xl mx-auto px-3.5 sm:px-4 py-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveMenu('book')}
+              className={`min-h-[42px] rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-1.5 transition ${
+                activeMenu === 'book'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <Calendar className="w-4 h-4" />
+              <span>공간 예약 하기</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveMenu('my_reservations');
+                fetchScheduleAndReservations();
+              }}
+              className={`min-h-[42px] rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-1.5 transition ${
+                activeMenu === 'my_reservations'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>내 예약</span>
+              {myReservations.length > 0 && (
+                <span
+                  className={`px-2 py-0.5 text-[11px] rounded-full font-extrabold ${
+                    activeMenu === 'my_reservations'
+                      ? 'bg-emerald-500 text-white'
+                      : 'bg-emerald-100 text-emerald-800'
+                  }`}
+                >
+                  {myReservations.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-3.5 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6">
-        {/* 1. 날짜 선택 & 이용 규칙 */}
-        <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-emerald-600" /> 날짜 선택 (최대 7일 전)
-            </h2>
-            <button
-              onClick={fetchScheduleAndReservations}
-              className="min-h-[32px] px-2.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-lg flex items-center gap-1"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> 새로고침
-            </button>
-          </div>
-
-          <div className="flex sm:grid sm:grid-cols-8 gap-2 overflow-x-auto pb-1 snap-x">
-            {days.map((d) => {
-              const active = d.dateStr === selectedDate;
-              return (
+        {/* ================= 메뉴 1: 공간 예약 하기 ================= */}
+        {activeMenu === 'book' && (
+          <>
+            {/* 1. 날짜 선택 & 이용 규칙 */}
+            <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-emerald-600" /> 날짜 선택 (최대 7일 전)
+                </h2>
                 <button
-                  key={d.dateStr}
-                  onClick={() => setSelectedDate(d.dateStr)}
-                  className={`snap-start min-w-[74px] sm:min-w-0 min-h-[52px] py-2 px-2.5 rounded-xl text-xs font-bold border transition flex flex-col items-center justify-center shrink-0 ${
-                    active
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
+                  onClick={fetchScheduleAndReservations}
+                  className="min-h-[32px] px-2.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-lg flex items-center gap-1"
                 >
-                  <span>{d.label}</span>
-                  {d.isToday && (
-                    <span
-                      className={`text-[10px] mt-0.5 ${
-                        active ? 'text-emerald-300' : 'text-emerald-600'
+                  <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+                </button>
+              </div>
+
+              <div className="flex sm:grid sm:grid-cols-8 gap-2 overflow-x-auto pb-1 snap-x">
+                {days.map((d) => {
+                  const active = d.dateStr === selectedDate;
+                  return (
+                    <button
+                      key={d.dateStr}
+                      onClick={() => setSelectedDate(d.dateStr)}
+                      className={`snap-start min-w-[74px] sm:min-w-0 min-h-[52px] py-2 px-2.5 rounded-xl text-xs font-bold border transition flex flex-col items-center justify-center shrink-0 ${
+                        active
+                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      오늘
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                      <span>{d.label}</span>
+                      {d.isToday && (
+                        <span
+                          className={`text-[10px] mt-0.5 ${
+                            active ? 'text-emerald-300' : 'text-emerald-600'
+                          }`}
+                        >
+                          오늘
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
 
-          <div
-            className={`mt-3.5 p-3.5 rounded-xl border ${
-              currentMode === 'reading_room'
-                ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
-                : 'bg-sky-50/90 border-sky-200 text-sky-950'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-white border border-current/15">
-                {currentMode === 'reading_room' ? '열람실(시험기간) · 12석' : '스터디룸 · 전체 대관'}
-              </span>
-              <span className="text-xs font-extrabold">이용 규칙</span>
-            </div>
+              <div
+                className={`mt-3.5 p-3.5 rounded-xl border ${
+                  currentMode === 'reading_room'
+                    ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                    : 'bg-sky-50/90 border-sky-200 text-sky-950'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-white border border-current/15">
+                    {currentMode === 'reading_room' ? '열람실(시험기간) · 12석' : '스터디룸 · 전체 대관'}
+                  </span>
+                  <span className="text-xs font-extrabold">이용 규칙</span>
+                </div>
 
-            {currentMode === 'reading_room' ? (
-              <ul className="text-xs font-medium space-y-1 leading-relaxed">
-                <li>• 24시간 개방 (00:00 ~ 24:00) 및 1인 1좌석 예약</li>
-                <li>• 준회원 일 최대 4시간 이용 가능 (정회원 제한 없음)</li>
-                <li>• 예약 취소 시 취소한 본인만 10분간 동일 좌석 재예약 제한</li>
-                <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
-              </ul>
-            ) : (
-              <ul className="text-xs font-medium space-y-1 leading-relaxed">
-                <li>• 운영시간: 12시 ~ 22시 (최대 4시간 이용 가능)</li>
-                <li>• 2인 이상 이용 필수 (대표자 및 동반자 중 정회원 1인 이상 필수)</li>
-                <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
-              </ul>
-            )}
-          </div>
-        </section>
+                {currentMode === 'reading_room' ? (
+                  <ul className="text-xs font-medium space-y-1 leading-relaxed">
+                    <li>• 24시간 개방 (00:00 ~ 24:00) 및 1인 1좌석 예약</li>
+                    <li>• 준회원 일 최대 4시간 이용 가능 (정회원 제한 없음)</li>
+                    <li>• 예약 취소 시 취소한 본인만 10분간 동일 좌석 재예약 제한</li>
+                    <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
+                  </ul>
+                ) : (
+                  <ul className="text-xs font-medium space-y-1 leading-relaxed">
+                    <li>• 운영시간: 12시 ~ 22시 (최대 4시간 이용 가능)</li>
+                    <li>• 2인 이상 이용 필수 (대표자 및 동반자 중 정회원 1인 이상 필수)</li>
+                    <li>• 이용 시간 중 [퇴실하기] 버튼으로 조기 퇴실 가능</li>
+                  </ul>
+                )}
+              </div>
+            </section>
 
-        {/* 2. 열람실(시험기간) 좌석 배치도 (A와 B 사이만 떨어져 보이도록 구성) */}
-        {currentMode === 'reading_room' && (
-          <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-bold text-slate-800">
-                열람실(시험기간) 좌석 배치도
-              </h2>
-              <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-slate-900 text-white">
-                선택됨: {selectedSeat}
-              </span>
-            </div>
+            {/* 2. 열람실(시험기간) 좌석 배치도 */}
+            {currentMode === 'reading_room' && (
+              <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-bold text-slate-800">
+                    열람실(시험기간) 좌석 배치도
+                  </h2>
+                  <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-slate-900 text-white">
+                    선택됨: {selectedSeat}
+                  </span>
+                </div>
 
-            <div
-              className="overflow-x-auto overflow-y-hidden pb-6"
-              style={{ touchAction: 'pan-x' }}
-            >
-              <div className="min-w-[660px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-6 pt-5 pb-7">
-                <div className="flex items-stretch justify-between gap-12">
-                  {/* A 테이블 (단독 분리) */}
-                  <div className="w-[180px] shrink-0 flex flex-col items-center">
-                    <div className="flex items-center justify-center gap-2.5 mb-2">
-                      {ROOM_TABLES[0].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                <div
+                  className="overflow-x-auto overflow-y-hidden pb-6"
+                  style={{ touchAction: 'pan-x' }}
+                >
+                  <div className="min-w-[660px] relative rounded-3xl border-[3px] border-stone-400 bg-stone-100/80 px-6 pt-5 pb-7">
+                    <div className="flex items-stretch justify-between gap-12">
+                      {/* A 테이블 (단독 분리) */}
+                      <div className="w-[180px] shrink-0 flex flex-col items-center">
+                        <div className="flex items-center justify-center gap-2.5 mb-2">
+                          {ROOM_TABLES[0].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                        </div>
+                        <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                          <span className="text-sm font-extrabold text-stone-700">A 테이블</span>
+                        </div>
+                        <div className="flex items-center justify-center gap-2.5 mt-2">
+                          {ROOM_TABLES[0].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                        </div>
+                      </div>
+
+                      {/* B + C 테이블 (나란히 배치) */}
+                      <div className="flex-1 flex items-stretch gap-4">
+                        <div className="flex-1 flex flex-col items-center">
+                          <div className="flex items-center justify-center gap-2.5 mb-2">
+                            {ROOM_TABLES[1].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                          </div>
+                          <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                            <span className="text-sm font-extrabold text-stone-700">B 테이블</span>
+                          </div>
+                          <div className="flex items-center justify-center gap-2.5 mt-2">
+                            {ROOM_TABLES[1].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                          </div>
+                        </div>
+
+                        <div className="flex-1 flex flex-col items-center">
+                          <div className="flex items-center justify-center gap-2.5 mb-2">
+                            {ROOM_TABLES[2].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                          </div>
+                          <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
+                            <span className="text-sm font-extrabold text-stone-700">C 테이블</span>
+                          </div>
+                          <div className="flex items-center justify-center gap-2.5 mt-2">
+                            {ROOM_TABLES[2].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
-                      <span className="text-sm font-extrabold text-stone-700">A 테이블</span>
-                    </div>
-                    <div className="flex items-center justify-center gap-2.5 mt-2">
-                      {ROOM_TABLES[0].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
-                    </div>
-                  </div>
 
-                  {/* B + C 테이블 (A와는 넉넉히 떨어지고 B와 C는 나란히 붙어 배치) */}
-                  <div className="flex-1 flex items-stretch gap-4">
-                    <div className="flex-1 flex flex-col items-center">
-                      <div className="flex items-center justify-center gap-2.5 mb-2">
-                        {ROOM_TABLES[1].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
+                    {/* 왼쪽 하단 출입구 표시 */}
+                    <div className="absolute -bottom-6 left-11 flex flex-col items-center">
+                      <div className="flex items-center gap-5 bg-stone-100 px-2.5">
+                        <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
+                        <ArrowUp className="w-4 h-4 text-stone-600 stroke-[2.5]" />
+                        <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
                       </div>
-                      <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
-                        <span className="text-sm font-extrabold text-stone-700">B 테이블</span>
-                      </div>
-                      <div className="flex items-center justify-center gap-2.5 mt-2">
-                        {ROOM_TABLES[1].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
-                      </div>
-                    </div>
-
-                    <div className="flex-1 flex flex-col items-center">
-                      <div className="flex items-center justify-center gap-2.5 mb-2">
-                        {ROOM_TABLES[2].topSeats.map((seatId) => renderSeatButton(seatId, 'top'))}
-                      </div>
-                      <div className="w-full h-14 rounded-2xl bg-white border-2 border-stone-300 flex items-center justify-center">
-                        <span className="text-sm font-extrabold text-stone-700">C 테이블</span>
-                      </div>
-                      <div className="flex items-center justify-center gap-2.5 mt-2">
-                        {ROOM_TABLES[2].bottomSeats.map((seatId) => renderSeatButton(seatId, 'bottom'))}
-                      </div>
+                      <span className="text-[11px] font-extrabold text-stone-600">입구</span>
                     </div>
                   </div>
                 </div>
+              </section>
+            )}
 
-                {/* 왼쪽 하단 출입구 표시 */}
-                <div className="absolute -bottom-6 left-11 flex flex-col items-center">
-                  <div className="flex items-center gap-5 bg-stone-100 px-2.5">
-                    <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
-                    <ArrowUp className="w-4 h-4 text-stone-600 stroke-[2.5]" />
-                    <span className="w-1 h-3.5 bg-stone-500 rounded-full" />
-                  </div>
-                  <span className="text-[11px] font-extrabold text-stone-600">입구</span>
+            {/* 3. 시간표 + [시작 시간 + 이용 시간] + 바로 아래 [예약 신청하기] */}
+            <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-emerald-600" />
+                  {currentMode === 'reading_room'
+                    ? `[${selectedSeat}] 시간 선택`
+                    : '[스터디룸] 12시 ~ 22시 시간 선택'}
+                </h2>
+
+                <div className="flex items-center gap-3 text-xs font-semibold">
+                  <span className="flex items-center gap-1">
+                    <span className="w-3 h-3 rounded bg-emerald-500 inline-block" /> 빈자리
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-3 h-3 rounded bg-gray-300 inline-block" /> 예약됨
+                  </span>
                 </div>
               </div>
-            </div>
-          </section>
+
+              <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                {loadingData ? (
+                  <div className="h-12 rounded-xl bg-slate-200 animate-pulse" />
+                ) : currentMode === 'reading_room' ? (
+                  <>
+                    {renderTimelineStrip({
+                      titleBadge: '오전 (00시~12시)',
+                      startHour: 0,
+                      cols: 12,
+                      blocks: amBlocks,
+                    })}
+                    {renderTimelineStrip({
+                      titleBadge: '오후 (12시~24시)',
+                      startHour: 12,
+                      cols: 12,
+                      blocks: pmBlocks,
+                    })}
+                  </>
+                ) : (
+                  renderTimelineStrip({
+                    titleBadge: '이용 시간 (12시 ~ 22시)',
+                    startHour: 12,
+                    cols: 10,
+                    blocks: studyBlocks,
+                  })
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">1. 시작 시간</label>
+                  <select
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                    disabled={availableStartSlots.length === 0}
+                    className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  >
+                    {availableStartSlots.length === 0 ? (
+                      <option value="">예약 가능한 시작 시간 없음</option>
+                    ) : (
+                      availableStartSlots.map((slot) => (
+                        <option key={slot.start} value={slot.start}>
+                          {slot.start} 시작
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">2. 이용 시간</label>
+                  <select
+                    value={durationSlots}
+                    onChange={(e) => setDurationSlots(Number(e.target.value))}
+                    className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  >
+                    {durationOptions.map((opt) => (
+                      <option key={opt.slots} value={opt.slots}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* 시작 시간과 이용 시간 바로 아래 예약 요약 및 신청 버튼 */}
+              <div className="pt-1">
+                <div className="p-4 rounded-2xl bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="min-w-0 text-xs sm:text-sm">
+                    <div className="font-extrabold text-emerald-400">
+                      {currentMode === 'reading_room' ? `열람실(시험기간) · 좌석 ${selectedSeat}` : '스터디룸'}
+                    </div>
+                    {rangeValidation.valid ? (
+                      <div className="text-slate-200 mt-0.5">
+                        <strong>{selectedDate}</strong> · <strong>{startTime} ~ {computedEndTime}</strong> ({durationSlots * 0.5}시간)
+                      </div>
+                    ) : (
+                      <div className="text-rose-300 font-semibold mt-0.5">{rangeValidation.reason}</div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenBookingModal}
+                    disabled={!rangeValidation.valid}
+                    className={`w-full sm:w-auto min-h-[46px] px-6 py-2.5 text-sm font-extrabold rounded-xl shadow shrink-0 transition ${
+                      rangeValidation.valid
+                        ? 'bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white'
+                        : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    예약 신청하기
+                  </button>
+                </div>
+              </div>
+            </section>
+          </>
         )}
 
-        {/* 3. 압축된 시간표 + [시작 시간 + 이용 시간] 선택 */}
-        <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-emerald-600" />
-              {currentMode === 'reading_room'
-                ? `[${selectedSeat}] 시간 선택`
-                : '[스터디룸] 12시 ~ 22시 시간 선택'}
-            </h2>
-
-            <div className="flex items-center gap-3 text-xs font-semibold">
-              <span className="flex items-center gap-1">
-                <span className="w-3 h-3 rounded bg-emerald-500 inline-block" /> 빈자리
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-3 h-3 rounded bg-gray-300 inline-block" /> 예약됨
-              </span>
-            </div>
-          </div>
-
-          <div className="p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            {loadingData ? (
-              <div className="h-12 rounded-xl bg-slate-200 animate-pulse" />
-            ) : currentMode === 'reading_room' ? (
-              <>
-                {renderTimelineStrip({
-                  titleBadge: '오전 (00시~12시)',
-                  startHour: 0,
-                  cols: 12,
-                  blocks: amBlocks,
-                })}
-                {renderTimelineStrip({
-                  titleBadge: '오후 (12시~24시)',
-                  startHour: 12,
-                  cols: 12,
-                  blocks: pmBlocks,
-                })}
-              </>
-            ) : (
-              renderTimelineStrip({
-                titleBadge: '이용 시간 (12시 ~ 22시)',
-                startHour: 12,
-                cols: 10,
-                blocks: studyBlocks,
-              })
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">1. 시작 시간</label>
-              <select
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                disabled={availableStartSlots.length === 0}
-                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+        {/* ================= 메뉴 2: 내 예약 ================= */}
+        {activeMenu === 'my_reservations' && (
+          <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-800 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" /> 내 예약 내역 ({myReservations.length}건)
+              </h2>
+              <button
+                onClick={fetchScheduleAndReservations}
+                className="min-h-[34px] px-2.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-lg flex items-center gap-1"
               >
-                {availableStartSlots.length === 0 ? (
-                  <option value="">예약 가능한 시작 시간 없음</option>
-                ) : (
-                  availableStartSlots.map((slot) => (
-                    <option key={slot.start} value={slot.start}>
-                      {slot.start} 시작
-                    </option>
-                  ))
-                )}
-              </select>
+                <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+              </button>
             </div>
 
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">2. 이용 시간</label>
-              <select
-                value={durationSlots}
-                onChange={(e) => setDurationSlots(Number(e.target.value))}
-                className="w-full min-h-[46px] px-3.5 py-2.5 text-base sm:text-sm font-bold border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-              >
-                {durationOptions.map((opt) => (
-                  <option key={opt.slots} value={opt.slots}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </section>
-
-        {/* 4. 내 활성 예약 내역 */}
-        <section className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
-          <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" /> 내 활성 예약 내역 ({myReservations.length}건)
-          </h2>
-
-          {myReservations.length === 0 ? (
-            <p className="text-xs text-slate-400 py-6 text-center">현재 예약된 내역이 없습니다.</p>
-          ) : (
-            <div className="space-y-3">
-              {myReservations.map((res) => {
-                const sHHMM = formatHHMM(res.start_time);
-                const eHHMM = formatHHMM(res.end_time);
-                const inProgress = isReservationInProgress(res.date, sHHMM, eHHMM);
-                return (
-                  <div
-                    key={res.id}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-white">
-                          {res.mode === 'reading_room'
-                            ? `열람실(시험기간) ${res.seat_id}`
-                            : '스터디룸'}
-                        </span>
-                        <span className="text-sm font-extrabold text-slate-800">
-                          {res.date} | {sHHMM} ~ {eHHMM}
-                        </span>
-                        {inProgress && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 animate-pulse">
-                            예약 중
-                          </span>
-                        )}
-                      </div>
-                      {res.mode === 'study_room' && (
-                        <p className="text-xs text-slate-500 mt-1">
-                          인원: {res.total_headcount}명 · 목적: {res.purpose}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex items-center justify-end">
-                      {inProgress ? (
-                        <button
-                          onClick={() => {
-                            setActionPin('');
-                            setActionError('');
-                            setActionModal({ type: 'early_exit', reservation: res });
-                          }}
-                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
-                        >
-                          <LogOut className="w-3.5 h-3.5" /> 퇴실하기
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setActionPin('');
-                            setActionError('');
-                            setActionModal({ type: 'cancel', reservation: res });
-                          }}
-                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
-                        >
-                          <XCircle className="w-3.5 h-3.5" /> 예약 취소
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      </main>
-
-      {/* 하단 고정 예약 실행 바 */}
-      <div className="fixed bottom-0 inset-x-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 text-white z-30">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
-          <div className="min-w-0 text-xs sm:text-sm">
-            <div className="font-extrabold text-emerald-400">
-              {currentMode === 'reading_room' ? `좌석 ${selectedSeat}` : '스터디룸'}
-            </div>
-            {rangeValidation.valid ? (
-              <div className="truncate text-slate-200">
-                <strong>{startTime} ~ {computedEndTime}</strong> ({durationSlots * 0.5}시간)
+            {myReservations.length === 0 ? (
+              <div className="py-10 text-center space-y-3">
+                <p className="text-xs sm:text-sm text-slate-400">
+                  현재 활성화된 예약 내역이 없습니다.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveMenu('book')}
+                  className="min-h-[42px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl"
+                >
+                  공간 예약 하러 가기
+                </button>
               </div>
             ) : (
-              <div className="truncate text-rose-300 font-semibold">{rangeValidation.reason}</div>
-            )}
-          </div>
+              <div className="space-y-3">
+                {myReservations.map((res) => {
+                  const sHHMM = formatHHMM(res.start_time);
+                  const eHHMM = formatHHMM(res.end_time);
+                  const inProgress = isReservationInProgress(res.date, sHHMM, eHHMM);
+                  return (
+                    <div
+                      key={res.id}
+                      className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-white">
+                            {res.mode === 'reading_room'
+                              ? `열람실(시험기간) ${res.seat_id}`
+                              : '스터디룸'}
+                          </span>
+                          <span className="text-sm font-extrabold text-slate-800">
+                            {res.date} | {sHHMM} ~ {eHHMM}
+                          </span>
+                          {inProgress && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 animate-pulse">
+                              예약 중
+                            </span>
+                          )}
+                        </div>
+                        {res.mode === 'study_room' && (
+                          <p className="text-xs text-slate-500 mt-1">
+                            인원: {res.total_headcount}명 · 목적: {res.purpose}
+                          </p>
+                        )}
+                      </div>
 
-          <button
-            type="button"
-            onClick={handleOpenBookingModal}
-            disabled={!rangeValidation.valid}
-            className={`min-h-[44px] px-5 py-2.5 text-sm font-bold rounded-xl shadow shrink-0 transition ${
-              rangeValidation.valid
-                ? 'bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white'
-                : 'bg-slate-700 text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            예약 신청하기
-          </button>
-        </div>
-      </div>
+                      <div className="flex items-center justify-end">
+                        {inProgress ? (
+                          <button
+                            onClick={() => {
+                              setActionPin('');
+                              setActionError('');
+                              setActionModal({ type: 'early_exit', reservation: res });
+                            }}
+                            className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                          >
+                            <LogOut className="w-3.5 h-3.5" /> 퇴실하기
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setActionPin('');
+                              setActionError('');
+                              setActionModal({ type: 'cancel', reservation: res });
+                            }}
+                            className="w-full sm:w-auto min-h-[40px] px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                          >
+                            <XCircle className="w-3.5 h-3.5" /> 예약 취소
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+      </main>
 
       {/* 예약 신청 모달 */}
       {showBookingModal && (
