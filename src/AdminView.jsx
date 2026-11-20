@@ -48,7 +48,18 @@ function getAdminRangeDays() {
   return list;
 }
 
-export default function AdminView({ onSwitchToStudent }) {
+export default function AdminView({ onSwitchToStudent, onBack, onExitAdmin }) {
+  const handleGoStudent = () => {
+    if (typeof onSwitchToStudent === 'function') {
+      onSwitchToStudent();
+    } else if (typeof onBack === 'function') {
+      onBack();
+    } else if (typeof onExitAdmin === 'function') {
+      onExitAdmin();
+    } else {
+      window.location.href = '/';
+    }
+  };
   const [sessionUser, setSessionUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
 
@@ -387,7 +398,7 @@ export default function AdminView({ onSwitchToStudent }) {
             </div>
             <button
               type="button"
-              onClick={onSwitchToStudent}
+              onClick={handleGoStudent}
               className="min-h-[36px] px-2.5 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 rounded-xl"
             >
               ← 학생 화면
@@ -452,7 +463,7 @@ export default function AdminView({ onSwitchToStudent }) {
 
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={onSwitchToStudent}
+              onClick={handleGoStudent}
               className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl"
             >
               학생 화면
