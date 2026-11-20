@@ -1075,13 +1075,17 @@ export default function StudentView({ onSwitchToAdmin }) {
     );
   }
 
-  // [화면 1-2] 승인 대기 / 반려 안내 화면
+// [화면 1-2] 승인 대기 / 반려 / 자격 박탈 안내 화면
   if (studentInfo.status !== 'associate' && studentInfo.status !== 'regular') {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
         <div className="max-w-md w-full bg-white rounded-3xl shadow-lg border border-slate-200 p-7 text-center space-y-4">
           <div className="inline-flex px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold">
-            {studentInfo.status === 'pending' ? '가입 승인 대기 중' : '가입 승인 반려'}
+            {studentInfo.status === 'pending'
+              ? '가입 승인 대기 중'
+              : studentInfo.status === 'revoked'
+              ? '이용 자격 박탈'
+              : '가입 승인 반려'}
           </div>
           <h2 className="text-xl font-extrabold text-slate-900">
             {studentInfo.name} ({studentInfo.studentId})
@@ -1092,6 +1096,8 @@ export default function StudentView({ onSwitchToAdmin }) {
           <p className="text-sm text-slate-600 leading-relaxed">
             {studentInfo.status === 'pending'
               ? '현재 편입연 관리자가 학번 및 학과/학부 정보를 확인 중입니다. 승인 완료 시 기본 [준회원] 등급으로 예약 시스템을 이용하실 수 있습니다.'
+              : studentInfo.status === 'revoked'
+              ? '이용 자격이 박탈되었습니다. 편입연 관리자에게 문의해 주세요.'
               : '가입 승인이 반려되었습니다. 편입연 관리자에게 문의해 주세요.'}
           </p>
           <button
@@ -1105,7 +1111,6 @@ export default function StudentView({ onSwitchToAdmin }) {
       </div>
     );
   }
-
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
       {/* 상단 헤더 */}

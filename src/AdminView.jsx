@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Search,
   Trash2,
+  Ban,
 } from 'lucide-react';
 
 const ADMIN_EMAILS = ['kuats.official@gmail.com'];
@@ -58,8 +59,9 @@ export default function AdminView({ onSwitchToStudent }) {
 
   const [activeTab, setActiveTab] = useState('members');
 
+  // 회원 관리 상태
   const [members, setMembers] = useState([]);
-  const [memberFilter, setMemberFilter] = useState('all');
+  const [memberFilter, setMemberFilter] = useState('all'); // 'all' | 'pending' | 'associate' | 'regular' | 'revoked'
   const [searchQuery, setSearchQuery] = useState('');
   const [quickStudentId, setQuickStudentId] = useState('');
   const [loadingMembers, setLoadingMembers] = useState(false);
@@ -68,11 +70,19 @@ export default function AdminView({ onSwitchToStudent }) {
   const adminRangeDays = useMemo(() => getAdminRangeDays(), []);
   const todayStr = useMemo(() => formatKSTDate(0).dateStr, []);
 
+  // 날짜별 공간 지정 및 열람실 기간 지정 상태
   const [dailyModes, setDailyModes] = useState({});
+  const [periodStartDate, setPeriodStartDate] = useState(next8Days[0]?.dateStr || todayStr);
+  const [periodEndDate, setPeriodEndDate] = useState(
+    next8Days[2]?.dateStr || next8Days[0]?.dateStr || todayStr
+  );
+  const [applyingPeriod, setApplyingPeriod] = useState(false);
   const [loadingModes, setLoadingModes] = useState(false);
 
+  // 예약 현황 상태
   const [reservations, setReservations] = useState([]);
   const [selectedResDate, setSelectedResDate] = useState(todayStr);
+  const [hideCancelled, setHideCancelled] = useState(true);
   const [loadingRes, setLoadingRes] = useState(false);
 
   useEffect(() => {
@@ -203,7 +213,9 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   }, [selectedResDate]);
 
-  const handleUpdateMemberStatus = async (studentId, newStatus) => {
+  // 회원 등급/자격 변경 (associate / regular / rejected / revoked)
+  const handleUpdateMemberStatus = async (studentId, newStatus, confirmMsg = '') => {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
     try {
       const { error } = await supabase
         .from('member_profiles')
@@ -216,6 +228,7 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
+  // 학번으로 빠른 정회원 승격
   const handleQuickPromoteRegular = async (e) => {
     e.preventDefault();
     const cleanId = quickStudentId.trim();
@@ -250,6 +263,7 @@ export default function AdminView({ onSwitchToStudent }) {
     }
   };
 
+  // 날짜별 단일 변경 (study_room <-> reading_room)
   const handleChangeDateMode = async (dateStr, newMode) => {
     try {
       const { error } = await supabase
@@ -258,10 +272,54 @@ export default function AdminView({ onSwitchToStudent }) {
       if (error) throw error;
       setDailyModes((prev) => ({ ...prev, [dateStr]: newMode }));
     } catch (err) {
-      alert('운영 설정 변경 실패: ' + err.message);
+      alert('공간 지정 변경 실패: ' + err.message);
     }
   };
 
+  // 지정한 기간(시작일 ~ 종료일)을 열람실(시험기간)으로 일괄 적용하고 나머지는 기본 스터디룸으로 설정
+  const handleApplyReadingRoomPeriod = async (e) => {
+    e.preventDefault();
+    if (!periodStartDate || !periodEndDate) {
+      alert('시작일과 종료일을 모두 선택해 주세요.');
+      return;
+    }
+    if (periodStartDate > periodEndDate) {
+      alert('시작일이 종료일보다 늦을 수 없습니다.');
+      return;
+    }
+
+    setApplyingPeriod(true);
+    try {
+      const rows = next8Days.map((d) => {
+        const isInReadingPeriod =
+          d.dateStr >= periodStartDate && d.dateStr <= periodEndDate;
+        return {
+          date: d.dateStr,
+          mode: isInReadingPeriod ? 'reading_room' : 'study_room',
+        };
+      });
+
+      const { error } = await supabase
+        .from('daily_modes')
+        .upsert(rows, { onConflict: 'date' });
+      if (error) throw error;
+
+      const nextMap = {};
+      rows.forEach((r) => {
+        nextMap[r.date] = r.mode;
+      });
+      setDailyModes(nextMap);
+      alert(
+        `${periodStartDate} ~ ${periodEndDate} 기간이 열람실(시험기간)로 지정되었고, 그 외 날짜는 스터디룸으로 설정되었습니다.`
+      );
+    } catch (err) {
+      alert('기간 지정 적용 실패: ' + err.message);
+    } finally {
+      setApplyingPeriod(false);
+    }
+  };
+
+  // 관리자 직권 예약 취소
   const handleAdminCancelReservation = async (res) => {
     if (
       !window.confirm(
@@ -302,6 +360,11 @@ export default function AdminView({ onSwitchToStudent }) {
     () => members.filter((m) => m.status === 'pending').length,
     [members]
   );
+
+  const visibleReservations = useMemo(() => {
+    if (!hideCancelled) return reservations;
+    return reservations.filter((r) => r.status !== 'cancelled');
+  }, [reservations, hideCancelled]);
 
   if (authChecking) {
     return (
@@ -505,6 +568,10 @@ export default function AdminView({ onSwitchToStudent }) {
                     key: 'regular',
                     label: `정회원 (${members.filter((m) => m.status === 'regular').length})`,
                   },
+                  {
+                    key: 'revoked',
+                    label: `박탈 (${members.filter((m) => m.status === 'revoked').length})`,
+                  },
                 ].map((f) => (
                   <button
                     key={f.key}
@@ -540,182 +607,293 @@ export default function AdminView({ onSwitchToStudent }) {
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  {filteredMembers.map((m) => (
-                    <div
-                      key={m.student_id}
-                      className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 space-y-2.5"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-extrabold text-slate-900">{m.name}</span>
-                            <span className="text-xs font-semibold text-slate-500">
-                              {m.student_id}
-                            </span>
+                  {filteredMembers.map((m) => {
+                    const isRegularMember = m.status === 'regular';
+                    return (
+                      <div
+                        key={m.student_id}
+                        className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                          isRegularMember
+                            ? 'border-indigo-200 bg-indigo-50/40'
+                            : 'border-slate-200 bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={`font-extrabold text-slate-900 ${
+                                  isRegularMember ? 'text-base sm:text-lg' : 'text-sm'
+                                }`}
+                              >
+                                {m.name}
+                              </span>
+                              <span className="text-xs font-semibold text-slate-500">
+                                {m.student_id}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-0.5">{m.department}</p>
                           </div>
-                          <p className="text-xs text-slate-600 mt-0.5">{m.department}</p>
+
+                          {isRegularMember ? (
+                            <span className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white text-sm font-black shadow-xs tracking-wide">
+                              정회원
+                            </span>
+                          ) : (
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold ${
+                                m.status === 'pending'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : m.status === 'associate'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : m.status === 'revoked'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-rose-100 text-rose-800'
+                              }`}
+                            >
+                              {m.status === 'pending'
+                                ? '승인 대기'
+                                : m.status === 'associate'
+                                ? '준회원'
+                                : m.status === 'revoked'
+                                ? '자격 박탈'
+                                : '반려됨'}
+                            </span>
+                          )}
                         </div>
 
-                        <span
-                          className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold ${
-                            m.status === 'pending'
-                              ? 'bg-amber-100 text-amber-800'
-                              : m.status === 'regular'
-                              ? 'bg-indigo-100 text-indigo-800'
-                              : m.status === 'associate'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}
-                        >
-                          {m.status === 'pending'
-                            ? '승인 대기'
-                            : m.status === 'regular'
-                            ? '정회원'
-                            : m.status === 'associate'
-                            ? '준회원'
-                            : '반려됨'}
-                        </span>
-                      </div>
+                        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                          {m.status === 'pending' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
+                                className="flex-1 sm:flex-initial min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" /> 준회원 승인
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateMemberStatus(m.student_id, 'rejected')}
+                                className="flex-1 sm:flex-initial min-h-[40px] px-3 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                              >
+                                <XCircle className="w-3.5 h-3.5" /> 반려
+                              </button>
+                            </>
+                          )}
 
-                      <div className="grid grid-cols-2 sm:flex sm:justify-end gap-2 pt-1">
-                        {m.status === 'pending' && (
-                          <>
+                          {m.status === 'associate' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateMemberStatus(m.student_id, 'regular')}
+                                className="flex-1 sm:flex-initial min-h-[40px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl"
+                              >
+                                정회원 승격
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateMemberStatus(
+                                    m.student_id,
+                                    'revoked',
+                                    `${m.name} (${m.student_id}) 회원의 자격을 박탈할까요?`
+                                  )
+                                }
+                                className="min-h-[40px] px-3 py-2 bg-white border border-red-300 hover:bg-red-50 text-red-600 text-xs font-bold rounded-xl flex items-center gap-1"
+                              >
+                                <Ban className="w-3.5 h-3.5" /> 박탈
+                              </button>
+                            </>
+                          )}
+
+                          {isRegularMember && (
+                            <div className="w-full flex items-center justify-between gap-2 pt-0.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateMemberStatus(
+                                    m.student_id,
+                                    'revoked',
+                                    `${m.name} (${m.student_id}) 정회원의 자격을 박탈할까요?`
+                                  )
+                                }
+                                className="min-h-[34px] px-2.5 py-1 bg-white border border-red-200 hover:bg-red-50 text-red-600 text-[11px] font-bold rounded-lg flex items-center gap-1"
+                              >
+                                <Ban className="w-3 h-3" /> 자격 박탈
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
+                                className="min-h-[30px] px-2.5 py-1 bg-slate-200/80 hover:bg-slate-300 text-slate-600 text-[11px] font-semibold rounded-lg"
+                              >
+                                준회원으로 변경
+                              </button>
+                            </div>
+                          )}
+
+                          {(m.status === 'rejected' || m.status === 'revoked') && (
                             <button
                               type="button"
                               onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
-                              className="min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
+                              className="w-full sm:w-auto min-h-[40px] px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl"
                             >
-                              <CheckCircle2 className="w-3.5 h-3.5" /> 준회원 승인
+                              준회원으로 복구
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateMemberStatus(m.student_id, 'rejected')}
-                              className="min-h-[40px] px-3 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1"
-                            >
-                              <XCircle className="w-3.5 h-3.5" /> 반려
-                            </button>
-                          </>
-                        )}
-
-                        {m.status === 'associate' && (
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateMemberStatus(m.student_id, 'regular')}
-                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl"
-                          >
-                            정회원으로 승격
-                          </button>
-                        )}
-
-                        {m.status === 'regular' && (
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
-                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl"
-                          >
-                            준회원으로 변경
-                          </button>
-                        )}
-
-                        {m.status === 'rejected' && (
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateMemberStatus(m.student_id, 'associate')}
-                            className="col-span-2 min-h-[40px] px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl"
-                          >
-                            준회원으로 재승인
-                          </button>
-                        )}
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
           </>
         )}
 
-        {/* ================= TAB 2: 날짜별 공간 지정 ================= */}
+        {/* ================= TAB 2: 날짜별 공간 지정 (기본 스터디룸 + 지정 기간 열람실) ================= */}
         {activeTab === 'modes' && (
-          <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
-            <div className="flex items-center justify-between">
+          <>
+            <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3">
               <div>
                 <h2 className="text-sm font-extrabold text-slate-800">
-                  날짜별 공간 지정 (오늘~7일 후)
+                  열람실(시험기간) 운영 기간 일괄 지정
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  미지정 날짜는 기본적으로 <strong>스터디룸</strong>으로 운영됩니다.
+                  기본은 <strong>스터디룸</strong>이며, 지정한 기간만 <strong>열람실(시험기간)</strong>로 바뀝니다.
                 </p>
               </div>
-              <button
-                onClick={fetchDailyModes}
-                className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> 새로고침
-              </button>
-            </div>
 
-            {loadingModes ? (
-              <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
-            ) : (
-              <div className="space-y-2.5">
-                {next8Days.map((d) => {
-                  const current =
-                    dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
-                  return (
-                    <div
-                      key={d.dateStr}
-                      className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+              <form onSubmit={handleApplyReadingRoomPeriod} className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      열람실 시작일
+                    </label>
+                    <select
+                      value={periodStartDate}
+                      onChange={(e) => setPeriodStartDate(e.target.value)}
+                      className="w-full min-h-[44px] px-3 py-2 text-sm font-bold border border-slate-300 rounded-xl bg-white"
                     >
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-extrabold text-slate-900">{d.label}</span>
-                        <span className="text-xs text-slate-500">({d.dateStr})</span>
-                        {d.isToday && (
-                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full">
-                            오늘
-                          </span>
-                        )}
-                      </div>
+                      {next8Days.map((d) => (
+                        <option key={d.dateStr} value={d.dateStr}>
+                          {d.label} ({d.dateStr})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                      <div className="grid grid-cols-2 gap-1.5 sm:w-72">
-                        <button
-                          type="button"
-                          onClick={() => handleChangeDateMode(d.dateStr, 'study_room')}
-                          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
-                            current === 'study_room'
-                              ? 'bg-sky-600 text-white border-sky-600 shadow-xs'
-                              : 'bg-white text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          스터디룸
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeDateMode(d.dateStr, 'reading_room')}
-                          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
-                            current === 'reading_room'
-                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                              : 'bg-white text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          열람실(시험기간)
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      열람실 종료일
+                    </label>
+                    <select
+                      value={periodEndDate}
+                      onChange={(e) => setPeriodEndDate(e.target.value)}
+                      className="w-full min-h-[44px] px-3 py-2 text-sm font-bold border border-slate-300 rounded-xl bg-white"
+                    >
+                      {next8Days.map((d) => (
+                        <option key={d.dateStr} value={d.dateStr}>
+                          {d.label} ({d.dateStr})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={applyingPeriod}
+                  className="w-full min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition"
+                >
+                  {applyingPeriod
+                    ? '적용 중...'
+                    : '선택 기간 열람실(시험기간) 적용 (나머지 스터디룸)'}
+                </button>
+              </form>
+            </section>
+
+            <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-extrabold text-slate-800">
+                    날짜별 개별 설정 (오늘~7일 후)
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    미지정 날짜는 기본적으로 <strong>스터디룸</strong>으로 운영됩니다.
+                  </p>
+                </div>
+                <button
+                  onClick={fetchDailyModes}
+                  className="min-h-[34px] px-2.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg flex items-center gap-1 shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> 새로고침
+                </button>
               </div>
-            )}
-          </section>
+
+              {loadingModes ? (
+                <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
+              ) : (
+                <div className="space-y-2.5">
+                  {next8Days.map((d) => {
+                    const current =
+                      dailyModes[d.dateStr] === 'reading_room' ? 'reading_room' : 'study_room';
+                    return (
+                      <div
+                        key={d.dateStr}
+                        className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-extrabold text-slate-900">{d.label}</span>
+                          <span className="text-xs text-slate-500">({d.dateStr})</span>
+                          {d.isToday && (
+                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full">
+                              오늘
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5 sm:w-72">
+                          <button
+                            type="button"
+                            onClick={() => handleChangeDateMode(d.dateStr, 'study_room')}
+                            className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
+                              current === 'study_room'
+                                ? 'bg-sky-600 text-white border-sky-600 shadow-xs'
+                                : 'bg-white text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            스터디룸
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleChangeDateMode(d.dateStr, 'reading_room')}
+                            className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition ${
+                              current === 'reading_room'
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                : 'bg-white text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            열람실(시험기간)
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
         )}
 
-        {/* ================= TAB 3: 예약 현황 (과거 7일 조회 + 7일 경과 자동 삭제) ================= */}
+        {/* ================= TAB 3: 예약 현황 ================= */}
         {activeTab === 'reservations' && (
           <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3.5">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-extrabold text-slate-800">
-                  예약 현황 ({reservations.length}건)
+                  예약 현황 ({visibleReservations.length}건)
                 </h2>
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   과거 7일 기록까지 조회 가능하며, 7일이 지난 기록은 자동 삭제됩니다.
@@ -754,15 +932,28 @@ export default function AdminView({ onSwitchToStudent }) {
               })}
             </div>
 
+            {/* 취소된 예약 숨기기 체크박스 */}
+            <label className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideCancelled}
+                onChange={(e) => setHideCancelled(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+              />
+              <span className="text-xs font-bold text-slate-700">
+                취소된 예약 숨기기
+              </span>
+            </label>
+
             {loadingRes ? (
               <div className="py-8 text-center text-xs text-slate-400">불러오는 중...</div>
-            ) : reservations.length === 0 ? (
+            ) : visibleReservations.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
-                해당 날짜에 예약 내역이 없습니다.
+                표시할 예약 내역이 없습니다.
               </div>
             ) : (
               <div className="space-y-2.5">
-                {reservations.map((res) => (
+                {visibleReservations.map((res) => (
                   <div
                     key={res.id}
                     className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 space-y-2"
